@@ -17,9 +17,8 @@
 | :--- | :--- | :--- |
 | 1 | **IndoMax21** | NSFW, Hentai, JAV, Asia, Western |
 | 2 | **JavHey** | NSFW, JAV |
-| 3 | **KimcilOnly** | NSFW, Film Semi, Indo 18+ |
-| 4 | **OnlyBokep** | NSFW, Bokep Indo, Bokep Jilbab |
-| 5 | **KingBokep** | NSFW, Bokep Indo |
+| 3 | **OnlyBokep** | NSFW, Bokep Indo, Bokep Jilbab |
+| 4 | **KingBokep** | NSFW, Bokep Indo |
 
 > [!WARNING]
 > **Disclaimer & Legal Notice**
