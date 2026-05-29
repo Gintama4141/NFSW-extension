@@ -28,10 +28,10 @@ class Kurakura21Provider : MainAPI() {
         val url = if (page == 1) request.data else "${request.data}page/$page/"
         val document = app.get(url).document
 
-        val elements = document.select("#gmr-main-load article, .gmr-item-modulepost")
+        val elements = document.select("article.item, #gmr-main-load article, .gmr-item-modulepost")
 
         val home = elements.mapNotNull { element ->
-            val titleElement = element.selectFirst(".entry-title a, h2 a")
+            val titleElement = element.selectFirst("h2.entry-title a, .entry-title a, h3 a")
             val title = titleElement?.text() ?: return@mapNotNull null
             val link = titleElement.attr("href")
 
@@ -51,9 +51,9 @@ class Kurakura21Provider : MainAPI() {
         val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
 
-        val elements = document.select("#gmr-main-load article, .gmr-item-modulepost")
+        val elements = document.select("article.item, #gmr-main-load article, .gmr-item-modulepost")
         return elements.mapNotNull { element ->
-            val titleElement = element.selectFirst(".entry-title a, h2 a")
+            val titleElement = element.selectFirst("h2.entry-title a, .entry-title a, h3 a")
             val title = titleElement?.text() ?: return@mapNotNull null
             val link = titleElement.attr("href")
 
@@ -73,7 +73,7 @@ class Kurakura21Provider : MainAPI() {
         val title = document.selectFirst("h1.entry-title")?.text() ?: return null
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val plot = document.select(".entry-content p").joinToString("\n") { it.text() }.trim()
-        val tags = document.select(".gmr-moviedata:contains(Genre:) a").map { it.text() }
+        val tags = document.select(".gmr-moviedata:contains(Genre:) a, .tags a").map { it.text() }
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
@@ -90,8 +90,8 @@ class Kurakura21Provider : MainAPI() {
     ): Boolean = coroutineScope {
         val document = app.get(data).document
 
-        val rawServerUrls = document.select(".muvipro-player-tabs a")
-            .mapNotNull { it.attr("href").takeIf { href -> href.isNotBlank() }?.let { url -> fixUrl(url) } }
+        val rawServerUrls = document.select(".muvipro-player-tabs a, ul.muvipro-player-tabs li a, .gmr-pagi-player a")
+            .mapNotNull { it.attr("href").takeIf { href -> href.isNotBlank() }?.let { u -> fixUrl(u) } }
             .distinct()
             .toMutableList()
 
@@ -106,7 +106,7 @@ class Kurakura21Provider : MainAPI() {
                 try {
                     val serverDoc = if (serverUrl == data) document else app.get(serverUrl, referer = data).document
 
-                    val iframes = serverDoc.select("iframe").mapNotNull {
+                    val iframes = serverDoc.select("iframe[src], .gmr-embed-responsive iframe, .responsive-player iframe").mapNotNull {
                         it.attr("src").takeIf { src -> src.isNotBlank() }?.let { src -> fixUrl(src) }
                     }
 

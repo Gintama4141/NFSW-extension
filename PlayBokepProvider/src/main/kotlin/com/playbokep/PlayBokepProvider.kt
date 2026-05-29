@@ -26,17 +26,17 @@ class PlayBokepProvider : MainAPI() {
         val url = if (page == 1) request.data else "${request.data}page/$page/"
         val document = app.get(url).document
 
-        val elements = document.select("article.thumb-block")
+        val elements = document.select("article.thumb-block, article.loop-video")
 
         val home = elements.mapNotNull { element ->
             val titleElement = element.selectFirst("a")
-            val title = titleElement?.attr("title") ?: element.selectFirst(".entry-header span")?.text() ?: return@mapNotNull null
+            val title = titleElement?.attr("title") ?: element.selectFirst(".entry-header span, header.entry-header span")?.text() ?: return@mapNotNull null
             val link = titleElement?.attr("href") ?: return@mapNotNull null
             if (link.isBlank()) return@mapNotNull null
 
             val img = element.selectFirst("img.video-main-thumb, img")
-            var image = img?.attr("data-src")?.takeIf { it.isNotBlank() }
-                ?: img?.attr("src")?.takeIf { it.isNotBlank() }
+            var image = img?.attr("data-src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
+                ?: img?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
 
             newMovieSearchResponse(title, fixUrl(link), TvType.NSFW) {
                 this.posterUrl = image
@@ -49,16 +49,16 @@ class PlayBokepProvider : MainAPI() {
         val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
 
-        val elements = document.select("article.thumb-block")
+        val elements = document.select("article.thumb-block, article.loop-video")
         return elements.mapNotNull { element ->
             val titleElement = element.selectFirst("a")
-            val title = titleElement?.attr("title") ?: element.selectFirst(".entry-header span")?.text() ?: return@mapNotNull null
+            val title = titleElement?.attr("title") ?: element.selectFirst(".entry-header span, header.entry-header span")?.text() ?: return@mapNotNull null
             val link = titleElement?.attr("href") ?: return@mapNotNull null
             if (link.isBlank()) return@mapNotNull null
 
             val img = element.selectFirst("img.video-main-thumb, img")
-            var image = img?.attr("data-src")?.takeIf { it.isNotBlank() }
-                ?: img?.attr("src")?.takeIf { it.isNotBlank() }
+            var image = img?.attr("data-src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
+                ?: img?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
 
             newMovieSearchResponse(title, fixUrl(link), TvType.NSFW) {
                 this.posterUrl = image
@@ -79,7 +79,7 @@ class PlayBokepProvider : MainAPI() {
 
         val duration = document.selectFirst("meta[itemprop=duration]")?.attr("content")
 
-        val tags = document.select(".tags-list a.label").map { it.text().trim() }
+        val tags = document.select(".tags-list a.label, .categories a").map { it.text().trim() }
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
@@ -97,7 +97,7 @@ class PlayBokepProvider : MainAPI() {
     ): Boolean = coroutineScope {
         val document = app.get(data).document
 
-        val iframes = document.select("iframe[src]").mapNotNull {
+        val iframes = document.select("iframe[src], .responsive-player iframe, .video-player iframe").mapNotNull {
             it.attr("src").takeIf { src -> src.isNotBlank() }
         }
 
@@ -110,17 +110,6 @@ class PlayBokepProvider : MainAPI() {
         }.awaitAll()
 
         return@coroutineScope true
-    }
-
-    private fun parseDuration(duration: String?): Int? {
-        if (duration.isNullOrBlank()) return null
-        val cleaned = duration.replace(Regex("[^0-9:]"), "").trim()
-        val parts = cleaned.split(":")
-        return when (parts.size) {
-            2 -> (parts[0].toIntOrNull() ?: 0) * 60 + (parts[1].toIntOrNull() ?: 0)
-            3 -> (parts[0].toIntOrNull() ?: 0) * 3600 + (parts[1].toIntOrNull() ?: 0) * 60 + (parts[2].toIntOrNull() ?: 0)
-            else -> null
-        }
     }
 
     private fun parseDurationISO(duration: String?): Int? {

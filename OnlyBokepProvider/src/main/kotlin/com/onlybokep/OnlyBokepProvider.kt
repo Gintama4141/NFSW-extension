@@ -24,16 +24,16 @@ class OnlyBokepProvider : MainAPI() {
         val url = if (page == 1) request.data else "${request.data}page/$page/"
         val document = app.get(url).document
 
-        val elements = document.select(".thumb-block")
+        val elements = document.select(".thumb-block, article.thumb-block")
 
         val home = elements.mapNotNull { element ->
-            val titleElement = element.selectFirst(".entry-header .title, .entry-header a")
-            val title = titleElement?.text() ?: return@mapNotNull null
-            val link = titleElement.attr("href")
+            val titleElement = element.selectFirst("a")
+            val title = titleElement?.attr("title") ?: element.selectFirst("header.entry-header span")?.text() ?: return@mapNotNull null
+            val link = titleElement?.attr("href") ?: return@mapNotNull null
             if (link.isBlank()) return@mapNotNull null
 
-            val img = element.selectFirst("img.lazy, img")
-            var image = img?.attr("data-src")?.takeIf { it.isNotBlank() }
+            val img = element.selectFirst("img")
+            var image = img?.attr("data-src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
                 ?: img?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
 
             newMovieSearchResponse(title, fixUrl(link), TvType.NSFW) {
@@ -47,15 +47,15 @@ class OnlyBokepProvider : MainAPI() {
         val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
 
-        val elements = document.select(".thumb-block")
+        val elements = document.select(".thumb-block, article.thumb-block")
         return elements.mapNotNull { element ->
-            val titleElement = element.selectFirst(".entry-header .title, .entry-header a")
-            val title = titleElement?.text() ?: return@mapNotNull null
-            val link = titleElement.attr("href")
+            val titleElement = element.selectFirst("a")
+            val title = titleElement?.attr("title") ?: element.selectFirst("header.entry-header span")?.text() ?: return@mapNotNull null
+            val link = titleElement?.attr("href") ?: return@mapNotNull null
             if (link.isBlank()) return@mapNotNull null
 
-            val img = element.selectFirst("img.lazy, img")
-            var image = img?.attr("data-src")?.takeIf { it.isNotBlank() }
+            val img = element.selectFirst("img")
+            var image = img?.attr("data-src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
                 ?: img?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
 
             newMovieSearchResponse(title, fixUrl(link), TvType.NSFW) {
@@ -76,7 +76,7 @@ class OnlyBokepProvider : MainAPI() {
         val description = document.selectFirst("meta[property=og:description]")?.attr("content")
             ?: document.selectFirst(".video-description p")?.text()
 
-        val tags = document.select(".video-tags a, .tag-item a").map { it.text() }.distinct()
+        val tags = document.select(".video-tags a, .tag-item a, .tags a").map { it.text() }.distinct()
 
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
@@ -93,7 +93,7 @@ class OnlyBokepProvider : MainAPI() {
     ): Boolean = coroutineScope {
         val document = app.get(data).document
 
-        val iframes = document.select("iframe[src]").mapNotNull {
+        val iframes = document.select("iframe[src], .responsive-player iframe, .video-player iframe").mapNotNull {
             it.attr("src").takeIf { src -> src.isNotBlank() }
         }
 

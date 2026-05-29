@@ -24,10 +24,10 @@ class KimcilOnlyProvider : MainAPI() {
         val url = if (page == 1) request.data else "${request.data}page/$page/"
         val document = app.get(url).document
 
-        val elements = document.select(".gmr-item-modulepost")
+        val elements = document.select("article.item, .gmr-item-modulepost")
 
         val home = elements.mapNotNull { element ->
-            val titleElement = element.selectFirst(".entry-title a")
+            val titleElement = element.selectFirst("h2.entry-title a, .entry-title a")
             val title = titleElement?.text() ?: return@mapNotNull null
             val link = titleElement.attr("href")
 
@@ -47,9 +47,9 @@ class KimcilOnlyProvider : MainAPI() {
         val searchUrl = "$mainUrl/?s=$query"
         val document = app.get(searchUrl).document
 
-        val elements = document.select(".gmr-item-modulepost")
+        val elements = document.select("article.item, .gmr-item-modulepost")
         return elements.mapNotNull { element ->
-            val titleElement = element.selectFirst(".entry-title a")
+            val titleElement = element.selectFirst("h2.entry-title a, .entry-title a")
             val title = titleElement?.text() ?: return@mapNotNull null
             val link = titleElement.attr("href")
 
@@ -86,8 +86,8 @@ class KimcilOnlyProvider : MainAPI() {
     ): Boolean = coroutineScope {
         val document = app.get(data).document
 
-        val rawServerUrls = document.select(".muvipro-player-tabs a")
-            .mapNotNull { it.attr("href").takeIf { href -> href.isNotBlank() }?.let { url -> fixUrl(url) } }
+        val rawServerUrls = document.select(".muvipro-player-tabs a, ul.muvipro-player-tabs li a")
+            .mapNotNull { it.attr("href").takeIf { href -> href.isNotBlank() }?.let { u -> fixUrl(u) } }
             .distinct()
             .toMutableList()
 
@@ -102,7 +102,7 @@ class KimcilOnlyProvider : MainAPI() {
                 try {
                     val serverDoc = if (serverUrl == data) document else app.get(serverUrl, referer = data).document
 
-                    val iframes = serverDoc.select("iframe").mapNotNull {
+                    val iframes = serverDoc.select("iframe[src], .gmr-embed-responsive iframe").mapNotNull {
                         it.attr("src").takeIf { src -> src.isNotBlank() }?.let { src -> fixUrl(src) }
                     }
 

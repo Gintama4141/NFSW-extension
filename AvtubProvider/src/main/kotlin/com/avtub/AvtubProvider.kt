@@ -14,6 +14,7 @@ class AvtubProvider : MainAPI() {
     override var lang = "id"
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
+    override val usesWebView = true
 
     override val mainPage = mainPageOf(
         "$mainUrl/category/bokep-indo/" to "Indo 18+",
@@ -35,8 +36,8 @@ class AvtubProvider : MainAPI() {
             val link = fixUrl(href)
 
             val img = element.selectFirst("img")
-            var image = img?.attr("data-src")?.takeIf { it.isNotBlank() }
-                ?: img?.attr("src")?.takeIf { it.isNotBlank() }
+            var image = img?.attr("data-src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
+                ?: img?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
 
             newMovieSearchResponse(title, link, TvType.NSFW) {
                 this.posterUrl = image
@@ -59,8 +60,8 @@ class AvtubProvider : MainAPI() {
             val link = fixUrl(href)
 
             val img = element.selectFirst("img")
-            var image = img?.attr("data-src")?.takeIf { it.isNotBlank() }
-                ?: img?.attr("src")?.takeIf { it.isNotBlank() }
+            var image = img?.attr("data-src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
+                ?: img?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
 
             newMovieSearchResponse(title, link, TvType.NSFW) {
                 this.posterUrl = image
