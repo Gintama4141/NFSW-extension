@@ -90,32 +90,40 @@ class Kurakura21Provider : MainAPI() {
     ): Boolean = coroutineScope {
         val document = app.get(data).document
 
-        val rawServerUrls = document.select(".muvipro-player-tabs a, ul.muvipro-player-tabs li a, .gmr-pagi-player a")
-            .mapNotNull { it.attr("href").takeIf { href -> href.isNotBlank() }?.let { u -> fixUrl(u) } }
-            .distinct()
-            .toMutableList()
+        // Get all iframes from the page
+        val iframes = document.select("iframe[src], .gmr-embed-responsive iframe, .responsive-player iframe").mapNotNull {
+            it.attr("src").takeIf { src -> src.isNotBlank() }?.let { src -> fixUrl(src) }
+        }.distinct()
 
-        if (rawServerUrls.isEmpty()) {
-            rawServerUrls.add(data)
-        }
-
-        val sortedUrls = rawServerUrls.sortedBy { if (it == data) 0 else 1 }
-
-        sortedUrls.map { serverUrl ->
+        iframes.map { iframeSrc ->
             async(Dispatchers.IO) {
                 try {
-                    val serverDoc = if (serverUrl == data) document else app.get(serverUrl, referer = data).document
-
-                    val iframes = serverDoc.select("iframe[src], .gmr-embed-responsive iframe, .responsive-player iframe").mapNotNull {
-                        it.attr("src").takeIf { src -> src.isNotBlank() }?.let { src -> fixUrl(src) }
-                    }
-
-                    iframes.forEach { iframeSrc ->
-                        loadExtractor(iframeSrc, data, subtitleCallback, callback)
-                    }
+                    loadExtractor(iframeSrc, data, subtitleCallback, callback)
                 } catch (_: Exception) {}
             }
         }.awaitAll()
+
+        // Also get player tabs URLs (hash-based like #p2, #p3)
+        val playerTabs = document.select("ul.muvipro-player-tabs li a")
+            .mapNotNull { it.attr("href").takeIf { h -> h.isNotBlank() } }
+            .filter { !it.contains("javascript:") }
+
+        // For hash-based tabs, we need to fetch the main page with the hash
+        // Since hash fragments aren't sent to server, we need to look for content loaded via JS
+        // Try to get iframes from tab content divs
+        val tabContents = document.select(".gmr-pagi-player, .tab-content")
+        tabContents.forEach { tabContent ->
+            val tabIframes = tabContent.select("iframe[src]").mapNotNull {
+                it.attr("src").takeIf { s -> s.isNotBlank() }?.let { s -> fixUrl(s) }
+            }
+            tabIframes.forEach { iframeSrc ->
+                async(Dispatchers.IO) {
+                    try {
+                        loadExtractor(iframeSrc, data, subtitleCallback, callback)
+                    } catch (_: Exception) {}
+                }
+            }
+        }
 
         return@coroutineScope true
     }

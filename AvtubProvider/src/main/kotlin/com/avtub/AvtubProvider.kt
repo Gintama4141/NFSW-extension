@@ -14,7 +14,6 @@ class AvtubProvider : MainAPI() {
     override var lang = "id"
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
-    override val usesWebView = true
 
     override val mainPage = mainPageOf(
         "$mainUrl/category/bokep-indo/" to "Indo 18+",
@@ -99,6 +98,35 @@ class AvtubProvider : MainAPI() {
     ): Boolean = coroutineScope {
         val document = app.get(data).document
 
+        // Get video element directly (Avtub uses <video> tag, not iframe)
+        val videoSources = document.select("video source, video[data-playlist]").mapNotNull {
+            it.attr("data-playlist")?.takeIf { s -> s.isNotBlank() }
+                ?: it.attr("src")?.takeIf { s -> s.isNotBlank() }
+        }
+
+        videoSources.map { videoUrl ->
+            async(Dispatchers.IO) {
+                try {
+                    if (videoUrl.contains(".m3u8")) {
+                        M3u8Helper.generateM3u8(name, videoUrl, mainUrl, headers = mapOf("Referer" to mainUrl)).forEach(callback)
+                    } else {
+                        callback.invoke(
+                            newExtractorLink(
+                                source = name,
+                                name = name,
+                                url = videoUrl,
+                                type = ExtractorLinkType.VIDEO
+                            ) {
+                                this.referer = mainUrl
+                                this.quality = Qualities.Unknown.value
+                            }
+                        )
+                    }
+                } catch (_: Exception) {}
+            }
+        }.awaitAll()
+
+        // Also try iframes as fallback
         val iframes = document.select("iframe[src]").mapNotNull {
             it.attr("src").takeIf { src -> src.isNotBlank() }
         }

@@ -97,14 +97,15 @@ class PlayBokepProvider : MainAPI() {
     ): Boolean = coroutineScope {
         val document = app.get(data).document
 
+        // Get all iframes from the page
         val iframes = document.select("iframe[src], .responsive-player iframe, .video-player iframe").mapNotNull {
-            it.attr("src").takeIf { src -> src.isNotBlank() }
-        }
+            it.attr("src").takeIf { src -> src.isNotBlank() }?.let { src -> fixUrl(src) }
+        }.distinct()
 
         iframes.map { iframeSrc ->
             async(Dispatchers.IO) {
                 try {
-                    loadExtractor(fixUrl(iframeSrc), data, subtitleCallback, callback)
+                    loadExtractor(iframeSrc, data, subtitleCallback, callback)
                 } catch (_: Exception) {}
             }
         }.awaitAll()

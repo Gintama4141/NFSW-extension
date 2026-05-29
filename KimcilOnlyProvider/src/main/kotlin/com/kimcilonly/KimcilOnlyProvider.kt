@@ -86,27 +86,33 @@ class KimcilOnlyProvider : MainAPI() {
     ): Boolean = coroutineScope {
         val document = app.get(data).document
 
-        val rawServerUrls = document.select(".muvipro-player-tabs a, ul.muvipro-player-tabs li a")
-            .mapNotNull { it.attr("href").takeIf { href -> href.isNotBlank() }?.let { u -> fixUrl(u) } }
-            .distinct()
-            .toMutableList()
+        // Get all iframes from the page
+        val iframes = document.select("iframe[src], .gmr-embed-responsive iframe").mapNotNull {
+            it.attr("src").takeIf { src -> src.isNotBlank() }?.let { src -> fixUrl(src) }
+        }.distinct()
 
-        if (rawServerUrls.isEmpty()) {
-            rawServerUrls.add(data)
-        }
-
-        val sortedUrls = rawServerUrls.sortedBy { if (it == data) 0 else 1 }
-
-        sortedUrls.map { serverUrl ->
+        iframes.map { iframeSrc ->
             async(Dispatchers.IO) {
                 try {
-                    val serverDoc = if (serverUrl == data) document else app.get(serverUrl, referer = data).document
+                    // Try loadExtractor first
+                    loadExtractor(iframeSrc, data, subtitleCallback, callback)
+                } catch (_: Exception) {}
+            }
+        }.awaitAll()
 
-                    val iframes = serverDoc.select("iframe[src], .gmr-embed-responsive iframe").mapNotNull {
-                        it.attr("src").takeIf { src -> src.isNotBlank() }?.let { src -> fixUrl(src) }
+        // Also get player tabs URLs
+        val playerTabs = document.select("ul.muvipro-player-tabs li a")
+            .mapNotNull { it.attr("href").takeIf { h -> h.isNotBlank() } }
+            .filter { !it.contains("javascript:") }
+
+        playerTabs.map { tabUrl ->
+            async(Dispatchers.IO) {
+                try {
+                    val tabDoc = app.get(fixUrl(tabUrl), referer = data).document
+                    val tabIframes = tabDoc.select("iframe[src]").mapNotNull {
+                        it.attr("src").takeIf { s -> s.isNotBlank() }?.let { s -> fixUrl(s) }
                     }
-
-                    iframes.forEach { iframeSrc ->
+                    tabIframes.forEach { iframeSrc ->
                         loadExtractor(iframeSrc, data, subtitleCallback, callback)
                     }
                 } catch (_: Exception) {}
