@@ -38,11 +38,8 @@ class PlayBokepProvider : MainAPI() {
             var image = img?.attr("data-src")?.takeIf { it.isNotBlank() }
                 ?: img?.attr("src")?.takeIf { it.isNotBlank() }
 
-            val duration = element.selectFirst("span.duration")?.text()?.trim()
-
             newMovieSearchResponse(title, fixUrl(link), TvType.NSFW) {
                 this.posterUrl = image
-                this.duration = parseDuration(duration)
             }
         }
         return newHomePageResponse(request.name, home, hasNext = elements.isNotEmpty())
@@ -63,11 +60,8 @@ class PlayBokepProvider : MainAPI() {
             var image = img?.attr("data-src")?.takeIf { it.isNotBlank() }
                 ?: img?.attr("src")?.takeIf { it.isNotBlank() }
 
-            val duration = element.selectFirst("span.duration")?.text()?.trim()
-
             newMovieSearchResponse(title, fixUrl(link), TvType.NSFW) {
                 this.posterUrl = image
-                this.duration = parseDuration(duration)
             }
         }
     }
