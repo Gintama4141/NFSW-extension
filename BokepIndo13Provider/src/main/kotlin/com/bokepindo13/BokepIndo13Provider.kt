@@ -96,19 +96,20 @@ class BokepIndo13Provider : MainAPI() {
     ): Boolean = coroutineScope {
         val document = app.get(data).document
 
+        val allJobs = mutableListOf<kotlinx.coroutines.Deferred<Unit>>()
+
         // Try to extract video from meta tag first (direct video URL)
         val embedUrl = document.selectFirst("meta[itemprop=embedURL]")?.attr("content")
         if (embedUrl != null && embedUrl.isNotBlank()) {
-            async(Dispatchers.IO) {
+            allJobs.add(async(Dispatchers.IO) {
                 try {
-                    // Try to extract video from bebasbokep.online
                     if (embedUrl.contains("bebasbokep")) {
                         extractBebasBokep(embedUrl, data, callback)
                     } else {
                         loadExtractor(fixUrl(embedUrl), data, subtitleCallback, callback)
                     }
                 } catch (_: Exception) {}
-            }.awaitAll()
+            })
         }
 
         // Also try iframes
@@ -116,8 +117,8 @@ class BokepIndo13Provider : MainAPI() {
             it.attr("src").takeIf { src -> src.isNotBlank() }?.let { src -> fixUrl(src) }
         }.distinct()
 
-        iframes.map { iframeSrc ->
-            async(Dispatchers.IO) {
+        iframes.forEach { iframeSrc ->
+            allJobs.add(async(Dispatchers.IO) {
                 try {
                     if (iframeSrc.contains("bebasbokep")) {
                         extractBebasBokep(iframeSrc, data, callback)
@@ -125,9 +126,10 @@ class BokepIndo13Provider : MainAPI() {
                         loadExtractor(iframeSrc, data, subtitleCallback, callback)
                     }
                 } catch (_: Exception) {}
-            }
-        }.awaitAll()
+            })
+        }
 
+        allJobs.awaitAll()
         return@coroutineScope true
     }
 
