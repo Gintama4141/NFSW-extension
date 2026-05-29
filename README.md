@@ -23,6 +23,7 @@
 | 2 | **JavHey** | NSFW, JAV |
 | 3 | **Kurakura21** | NSFW, JAV, Indo 18+, Korea 18+, Cina 18+, Barat 18+ |
 | 4 | **KimcilOnly** | NSFW, Film Semi, Indo 18+ |
+| 5 | **Avtub** | NSFW, Indo 18+, JAV Sub Indo, JAV Uncensored |
 
 > [!WARNING]
 > **Disclaimer & Legal Notice**
