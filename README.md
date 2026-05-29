@@ -26,6 +26,7 @@
 | 5 | **Avtub** | NSFW, Indo 18+, JAV Sub Indo, JAV Uncensored |
 | 6 | **OnlyBokep** | NSFW, Bokep Indo, Bokep Jilbab |
 | 7 | **KingBokep** | NSFW, Bokep Indo |
+| 8 | **PlayBokep** | NSFW, Indonesia, Barat, Jepang, Film Semi |
 
 > [!WARNING]
 > **Disclaimer & Legal Notice**
