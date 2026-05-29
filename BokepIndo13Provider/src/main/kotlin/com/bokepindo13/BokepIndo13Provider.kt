@@ -1,6 +1,5 @@
 package com.bokepindo13
 
-import android.util.Base64
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.Dispatchers
@@ -98,9 +97,9 @@ class BokepIndo13Provider : MainAPI() {
 
         val allJobs = mutableListOf<kotlinx.coroutines.Deferred<Any>>()
 
-        // Try to extract video from meta tag first (direct video URL)
+        // Try to extract video from meta tag first
         val embedUrl = document.selectFirst("meta[itemprop=embedURL]")?.attr("content")
-        if (embedUrl != null && embedUrl.isNotBlank()) {
+        if (!embedUrl.isNullOrBlank()) {
             allJobs.add(async(Dispatchers.IO) {
                 try {
                     if (embedUrl.contains("bebasbokep")) {
@@ -141,8 +140,69 @@ class BokepIndo13Provider : MainAPI() {
         try {
             val document = app.get(url, referer = referer).document
 
-            // Try to find video source in page
-            val videoSrc = document.select("video source, video").mapNotNull {
+            // Method 1: Try to unpack obfuscated JavaScript and find video URL
+            val scripts = document.select("script")
+            for (script in scripts) {
+                val scriptContent = script.html()
+                if (scriptContent.contains("eval(function(p,a,c,k,e,d)")) {
+                    val unpacked = getAndUnpack(scriptContent)
+
+                    // Look for file: pattern in JW Player config
+                    val fileMatch = Regex("file:\\s*[\"']([^\"']+\\.mp4[^\"']*)[\"']").find(unpacked)
+                    if (fileMatch != null) {
+                        val videoUrl = fileMatch.groupValues[1].replace("\\/", "/")
+                        callback.invoke(
+                            newExtractorLink(
+                                source = name,
+                                name = "BebasBokep",
+                                url = videoUrl,
+                                type = ExtractorLinkType.VIDEO
+                            ) {
+                                this.referer = url
+                                this.quality = Qualities.Unknown.value
+                            }
+                        )
+                        return
+                    }
+
+                    // Also try for m3u8
+                    val m3u8Match = Regex("file:\\s*[\"']([^\"']+\\.m3u8[^\"']*)[\"']").find(unpacked)
+                    if (m3u8Match != null) {
+                        val videoUrl = m3u8Match.groupValues[1].replace("\\/", "/")
+                        M3u8Helper.generateM3u8(
+                            name,
+                            videoUrl,
+                            url,
+                            headers = mapOf("Referer" to url)
+                        ).forEach(callback)
+                        return
+                    }
+                }
+            }
+
+            // Method 2: Try to find video in plain scripts
+            val pageHtml = document.html()
+            val mp4Match = Regex("[\"']([^\"']+\\.mp4[^\"']*)[\"']").find(pageHtml)
+            if (mp4Match != null) {
+                val videoUrl = mp4Match.groupValues[1].replace("\\/", "/")
+                if (videoUrl.startsWith("http")) {
+                    callback.invoke(
+                        newExtractorLink(
+                            source = name,
+                            name = "BebasBokep",
+                            url = videoUrl,
+                            type = ExtractorLinkType.VIDEO
+                        ) {
+                            this.referer = url
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
+                    return
+                }
+            }
+
+            // Method 3: Try video source element
+            val videoSrc = document.select("video source, video[src]").mapNotNull {
                 it.attr("src").takeIf { s -> s.isNotBlank() }
             }.firstOrNull()
 
@@ -159,7 +219,7 @@ class BokepIndo13Provider : MainAPI() {
                     callback.invoke(
                         newExtractorLink(
                             source = name,
-                            name = name,
+                            name = "BebasBokep",
                             url = videoUrl,
                             type = ExtractorLinkType.VIDEO
                         ) {
@@ -167,54 +227,6 @@ class BokepIndo13Provider : MainAPI() {
                             this.quality = Qualities.Unknown.value
                         }
                     )
-                }
-                return
-            }
-
-            // Try to find video URL in JavaScript
-            val pageHtml = document.html()
-            val m3u8Match = Regex(""""(https?://[^"]+\.m3u8[^"]*)"""").find(pageHtml)
-            if (m3u8Match != null) {
-                val m3u8Url = m3u8Match.groupValues[1].replace("\\/", "/")
-                M3u8Helper.generateM3u8(
-                    name,
-                    m3u8Url,
-                    url,
-                    headers = mapOf("Referer" to url)
-                ).forEach(callback)
-                return
-            }
-
-            val mp4Match = Regex(""""(https?://[^"]+\.mp4[^"]*)"""").find(pageHtml)
-            if (mp4Match != null) {
-                val mp4Url = mp4Match.groupValues[1].replace("\\/", "/")
-                callback.invoke(
-                    newExtractorLink(
-                        source = name,
-                        name = name,
-                        url = mp4Url,
-                        type = ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = url
-                        this.quality = Qualities.Unknown.value
-                    }
-                )
-                return
-            }
-
-            // Try to find packed/obfuscated JavaScript
-            val packedMatch = Regex("""eval\(function\(p,a,c,k,e,d\).+?</script>""", RegexOption.DOT_MATCHES_ALL).find(pageHtml)
-            if (packedMatch != null) {
-                val unpacked = getAndUnpack(packedMatch.value)
-                val unpackedM3u8 = Regex(""""(https?://[^"]+\.m3u8[^"]*)"""").find(unpacked)
-                if (unpackedM3u8 != null) {
-                    val m3u8Url = unpackedM3u8.groupValues[1].replace("\\/", "/")
-                    M3u8Helper.generateM3u8(
-                        name,
-                        m3u8Url,
-                        url,
-                        headers = mapOf("Referer" to url)
-                    ).forEach(callback)
                 }
             }
         } catch (_: Exception) {}
