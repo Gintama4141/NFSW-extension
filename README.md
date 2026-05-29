@@ -4,9 +4,6 @@
 
 **NSFW CloudStream extensions for JAV, Hentai, and adult content with Indonesian subtitles**
 
-[![Platform](https://img.shields.io/badge/Platform-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://www.android.com)
-[![License: GPL-3.0](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
-[![Commits](https://img.shields.io/github/commit-activity/m/Gintama4141/NFSW-extension?style=for-the-badge&logo=github)](https://github.com/Gintama4141/NFSW-extension/commits/master)
 
 <br>
 <img src="https://raw.githubusercontent.com/Gintama4141/NFSW-extension/refs/heads/master/banner.png" alt="NFSW Extension Banner" width="100%">
