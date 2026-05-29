@@ -4,7 +4,6 @@
 
 **NSFW CloudStream extensions for JAV, Hentai, and adult content with Indonesian subtitles**
 
-
 <br>
 <img src="https://raw.githubusercontent.com/Gintama4141/NFSW-extension/refs/heads/master/banner.png" alt="NFSW Extension Banner" width="100%">
 
@@ -18,12 +17,8 @@
 | :--- | :--- | :--- |
 | 1 | **IndoMax21** | NSFW, Hentai, JAV, Asia, Western |
 | 2 | **JavHey** | NSFW, JAV |
-| 3 | **Kurakura21** | NSFW, JAV, Indo 18+, Korea 18+, Cina 18+, Barat 18+ |
-| 4 | **KimcilOnly** | NSFW, Film Semi, Indo 18+ |
-| 5 | **Avtub** | NSFW, Indo 18+, JAV Sub Indo, JAV Uncensored |
-| 6 | **OnlyBokep** | NSFW, Bokep Indo, Bokep Jilbab |
-| 7 | **KingBokep** | NSFW, Bokep Indo |
-| 8 | **PlayBokep** | NSFW, Indonesia, Barat, Jepang, Film Semi |
+| 3 | **OnlyBokep** | NSFW, Bokep Indo, Bokep Jilbab |
+| 4 | **KingBokep** | NSFW, Bokep Indo |
 
 > [!WARNING]
 > **Disclaimer & Legal Notice**
