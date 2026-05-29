@@ -1,11 +1,18 @@
 package com.kimcilonly
 
+import android.util.Base64
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import java.net.URI
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 class KimcilOnlyProvider : MainAPI() {
 
@@ -14,6 +21,8 @@ class KimcilOnlyProvider : MainAPI() {
     override var lang = "id"
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
+
+    private val byseExtractor by lazy { ByseSXLocal() }
 
     override val mainPage = mainPageOf(
         "$mainUrl/category/film-semi/" to "Film Semi",
@@ -84,12 +93,12 @@ class KimcilOnlyProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
-        // Player URLs: ?player=2, ?player=3, ?player=4
+        // Fetch each player URL separately
         val playerUrls = listOf(
-            data,                          // Player 1 (default)
-            "$data?player=2",              // Player 2
-            "$data?player=3",              // Player 3
-            "$data?player=4"               // Player 4
+            data,                      // Player 1
+            "$data?player=2",          // Player 2
+            "$data?player=3",          // Player 3
+            "$data?player=4"           // Player 4
         )
 
         playerUrls.map { playerUrl ->
@@ -97,14 +106,32 @@ class KimcilOnlyProvider : MainAPI() {
                 try {
                     val document = app.get(playerUrl, referer = data).document
 
-                    // Extract iframe src from the page
                     val iframeSrc = document.select("iframe[src]").mapNotNull {
                         it.attr("src").takeIf { src -> src.isNotBlank() }
-                    }.firstOrNull()
+                    }.firstOrNull() ?: return@async
 
-                    if (iframeSrc != null) {
-                        val fullUrl = fixUrl(iframeSrc)
-                        loadExtractor(fullUrl, data, subtitleCallback, callback)
+                    val fullUrl = fixUrl(iframeSrc)
+
+                    // Route to appropriate extractor based on domain
+                    when {
+                        fullUrl.contains("byse") -> {
+                            byseExtractor.getUrl(fullUrl, data, subtitleCallback, callback)
+                        }
+                        fullUrl.contains("gupload") -> {
+                            // GUpload - try loadExtractor
+                            loadExtractor(fullUrl, data, subtitleCallback, callback)
+                        }
+                        fullUrl.contains("playmogo") -> {
+                            // PlayMogo - try loadExtractor
+                            loadExtractor(fullUrl, data, subtitleCallback, callback)
+                        }
+                        fullUrl.contains("pendek") -> {
+                            // Pendek - try loadExtractor
+                            loadExtractor(fullUrl, data, subtitleCallback, callback)
+                        }
+                        else -> {
+                            loadExtractor(fullUrl, data, subtitleCallback, callback)
+                        }
                     }
                 } catch (_: Exception) {}
             }
@@ -113,3 +140,74 @@ class KimcilOnlyProvider : MainAPI() {
         return@coroutineScope true
     }
 }
+
+open class ByseSXLocal : ExtractorApi() {
+    override var name = "Byse"
+    override var mainUrl = "https://byse.sx"
+    override val requiresReferer = true
+
+    private fun b64UrlDecode(s: String): ByteArray {
+        return try {
+            val fixed = s.replace('-', '+').replace('_', '/')
+            val pad = when (fixed.length % 4) {
+                2 -> "=="
+                3 -> "="
+                else -> ""
+            }
+            Base64.decode(fixed + pad, Base64.DEFAULT)
+        } catch (_: Exception) {
+            ByteArray(0)
+        }
+    }
+
+    private fun getBaseUrl(url: String): String {
+        return runCatching { URI(url).let { "${it.scheme}://${it.host}" } }.getOrDefault(url)
+    }
+
+    private fun getCodeFromUrl(url: String): String {
+        return runCatching { URI(url).path?.trimEnd('/')?.substringAfterLast('/') }.getOrNull() ?: ""
+    }
+
+    override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
+        val refererUrl = getBaseUrl(url)
+        val code = getCodeFromUrl(url)
+        if (code.isEmpty()) return
+
+        val detailsUrl = "$refererUrl/api/videos/$code/embed/details"
+        val details = app.get(detailsUrl).parsedSafe<DetailsRoot>() ?: return
+
+        val embedFrameUrl = details.embedFrameUrl
+        val embedBase = getBaseUrl(embedFrameUrl)
+        val embedCode = getCodeFromUrl(embedFrameUrl)
+
+        val playbackUrl = "$embedBase/api/videos/$embedCode/embed/playback"
+        val playbackHeaders = mapOf(
+            "accept" to "*/*",
+            "referer" to embedFrameUrl,
+            "x-embed-parent" to (referer ?: mainUrl)
+        )
+
+        val playback = app.get(playbackUrl, headers = playbackHeaders).parsedSafe<PlaybackRoot>()?.playback ?: return
+
+        try {
+            val keyBytes = b64UrlDecode(playback.keyParts[0]) + b64UrlDecode(playback.keyParts[1])
+            val ivBytes = b64UrlDecode(playback.iv)
+            val cipherBytes = b64UrlDecode(playback.payload)
+
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), GCMParameterSpec(128, ivBytes))
+
+            val jsonStr = String(cipher.doFinal(cipherBytes), Charsets.UTF_8).removePrefix("\uFEFF")
+
+            tryParseJson<PlaybackDecrypt>(jsonStr)?.sources?.firstOrNull()?.url?.let { streamUrl ->
+                M3u8Helper.generateM3u8(name, streamUrl, refererUrl, headers = mapOf("Referer" to refererUrl)).forEach(callback)
+            }
+        } catch (_: Exception) {}
+    }
+}
+
+data class DetailsRoot(@JsonProperty("embed_frame_url") val embedFrameUrl: String)
+data class PlaybackRoot(@JsonProperty("playback") val playback: Playback)
+data class Playback(@JsonProperty("iv") val iv: String, @JsonProperty("payload") val payload: String, @JsonProperty("key_parts") val keyParts: List<String>)
+data class PlaybackDecrypt(@JsonProperty("sources") val sources: List<PlaybackDecryptSource>)
+data class PlaybackDecryptSource(@JsonProperty("url") val url: String)
