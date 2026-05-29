@@ -109,8 +109,8 @@ class KingBokepProvider : MainAPI() {
         if (duration.isNullOrBlank()) return null
         val parts = duration.split(":")
         return when (parts.size) {
-            2 -> parts[0].toIntOrNull()?.times(60) + parts[1].toIntOrNull()
-            3 -> parts[0].toIntOrNull()?.times(3600) + parts[1].toIntOrNull()?.times(60) + parts[2].toIntOrNull()
+            2 -> (parts[0].toIntOrNull() ?: 0) * 60 + (parts[1].toIntOrNull() ?: 0)
+            3 -> (parts[0].toIntOrNull() ?: 0) * 3600 + (parts[1].toIntOrNull() ?: 0) * 60 + (parts[2].toIntOrNull() ?: 0)
             else -> null
         }
     }
