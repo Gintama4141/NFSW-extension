@@ -1,0 +1,9 @@
+{
+    "name": "NFSW Extension",
+    "iconUrl": "https://github.com/Gintama4141.png",
+    "description": "NSFW CloudStream extensions for JAV, Hentai, and adult content with Indonesian subtitles",
+    "manifestVersion": 1,
+    "pluginLists": [
+      "https://raw.githubusercontent.com/Gintama4141/NFSW-extension/builds/plugins.json"
+    ]
+}
