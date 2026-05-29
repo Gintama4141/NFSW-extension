@@ -1,5 +1,6 @@
 package com.bokepindo13
 
+import android.util.Base64
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.Dispatchers
@@ -95,6 +96,22 @@ class BokepIndo13Provider : MainAPI() {
     ): Boolean = coroutineScope {
         val document = app.get(data).document
 
+        // Try to extract video from meta tag first (direct video URL)
+        val embedUrl = document.selectFirst("meta[itemprop=embedURL]")?.attr("content")
+        if (embedUrl != null && embedUrl.isNotBlank()) {
+            async(Dispatchers.IO) {
+                try {
+                    // Try to extract video from bebasbokep.online
+                    if (embedUrl.contains("bebasbokep")) {
+                        extractBebasBokep(embedUrl, data, callback)
+                    } else {
+                        loadExtractor(fixUrl(embedUrl), data, subtitleCallback, callback)
+                    }
+                } catch (_: Exception) {}
+            }.awaitAll()
+        }
+
+        // Also try iframes
         val iframes = document.select("iframe[src], .responsive-player iframe, .video-player iframe").mapNotNull {
             it.attr("src").takeIf { src -> src.isNotBlank() }?.let { src -> fixUrl(src) }
         }.distinct()
@@ -102,12 +119,103 @@ class BokepIndo13Provider : MainAPI() {
         iframes.map { iframeSrc ->
             async(Dispatchers.IO) {
                 try {
-                    loadExtractor(iframeSrc, data, subtitleCallback, callback)
+                    if (iframeSrc.contains("bebasbokep")) {
+                        extractBebasBokep(iframeSrc, data, callback)
+                    } else {
+                        loadExtractor(iframeSrc, data, subtitleCallback, callback)
+                    }
                 } catch (_: Exception) {}
             }
         }.awaitAll()
 
         return@coroutineScope true
+    }
+
+    private suspend fun extractBebasBokep(
+        url: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            val document = app.get(url, referer = referer).document
+
+            // Try to find video source in page
+            val videoSrc = document.select("video source, video").mapNotNull {
+                it.attr("src").takeIf { s -> s.isNotBlank() }
+            }.firstOrNull()
+
+            if (videoSrc != null) {
+                val videoUrl = fixUrl(videoSrc)
+                if (videoUrl.contains(".m3u8")) {
+                    M3u8Helper.generateM3u8(
+                        name,
+                        videoUrl,
+                        url,
+                        headers = mapOf("Referer" to url)
+                    ).forEach(callback)
+                } else {
+                    callback.invoke(
+                        newExtractorLink(
+                            source = name,
+                            name = name,
+                            url = videoUrl,
+                            type = ExtractorLinkType.VIDEO
+                        ) {
+                            this.referer = url
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
+                }
+                return
+            }
+
+            // Try to find video URL in JavaScript
+            val pageHtml = document.html()
+            val m3u8Match = Regex(""""(https?://[^"]+\.m3u8[^"]*)"""").find(pageHtml)
+            if (m3u8Match != null) {
+                val m3u8Url = m3u8Match.groupValues[1].replace("\\/", "/")
+                M3u8Helper.generateM3u8(
+                    name,
+                    m3u8Url,
+                    url,
+                    headers = mapOf("Referer" to url)
+                ).forEach(callback)
+                return
+            }
+
+            val mp4Match = Regex(""""(https?://[^"]+\.mp4[^"]*)"""").find(pageHtml)
+            if (mp4Match != null) {
+                val mp4Url = mp4Match.groupValues[1].replace("\\/", "/")
+                callback.invoke(
+                    newExtractorLink(
+                        source = name,
+                        name = name,
+                        url = mp4Url,
+                        type = ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = url
+                        this.quality = Qualities.Unknown.value
+                    }
+                )
+                return
+            }
+
+            // Try to find packed/obfuscated JavaScript
+            val packedMatch = Regex("""eval\(function\(p,a,c,k,e,d\).+?</script>""", RegexOption.DOT_MATCHES_ALL).find(pageHtml)
+            if (packedMatch != null) {
+                val unpacked = getAndUnpack(packedMatch.value)
+                val unpackedM3u8 = Regex(""""(https?://[^"]+\.m3u8[^"]*)"""").find(unpacked)
+                if (unpackedM3u8 != null) {
+                    val m3u8Url = unpackedM3u8.groupValues[1].replace("\\/", "/")
+                    M3u8Helper.generateM3u8(
+                        name,
+                        m3u8Url,
+                        url,
+                        headers = mapOf("Referer" to url)
+                    ).forEach(callback)
+                }
+            }
+        } catch (_: Exception) {}
     }
 
     private fun parseDurationISO(duration: String?): Int? {
