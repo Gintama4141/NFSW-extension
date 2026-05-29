@@ -21,6 +21,7 @@
 | :--- | :--- | :--- |
 | 1 | **IndoMax21** | NSFW, Hentai, JAV, Asia, Western |
 | 2 | **JavHey** | NSFW, JAV |
+| 3 | **Kurakura21** | NSFW, JAV, Indo 18+, Korea 18+, Cina 18+, Barat 18+ |
 
 > [!WARNING]
 > **Disclaimer & Legal Notice**
