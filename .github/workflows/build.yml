@@ -8,7 +8,6 @@ on:
   push:
     branches:
       - master
-      - main
     paths-ignore:
       - '*.md'
   workflow_dispatch:
@@ -30,6 +29,7 @@ jobs:
         with:
           ref: "builds"
           path: "builds"
+          fetch-depth: 0
 
       - name: Clean old builds
         run: |
@@ -48,9 +48,6 @@ jobs:
 
       - name: Build Plugins
         working-directory: ${{ github.workspace }}/src
-        env:
-          DUBBINDO_PASSWORD: ${{ secrets.DUBBINDO_PASS }}
-          DUBBINDO_USERNAME: ${{ secrets.DUBBINDO_USER }}
         run: |
           chmod +x gradlew
           ./gradlew make makePluginsJson
