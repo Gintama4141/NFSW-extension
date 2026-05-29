@@ -96,7 +96,7 @@ class BokepIndo13Provider : MainAPI() {
     ): Boolean = coroutineScope {
         val document = app.get(data).document
 
-        val allJobs = mutableListOf<kotlinx.coroutines.Deferred<Unit>>()
+        val allJobs = mutableListOf<kotlinx.coroutines.Deferred<Any>>()
 
         // Try to extract video from meta tag first (direct video URL)
         val embedUrl = document.selectFirst("meta[itemprop=embedURL]")?.attr("content")
