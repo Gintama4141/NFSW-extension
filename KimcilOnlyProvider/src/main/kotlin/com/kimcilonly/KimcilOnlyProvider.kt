@@ -96,11 +96,16 @@ class KimcilOnlyProvider : MainAPI() {
                         fullUrl.contains("byse") -> {
                             byseExtractor.getUrl(fullUrl, data, subtitleCallback, callback)
                         }
-                        fullUrl.contains("playmogo") || fullUrl.contains("pendek") || fullUrl.contains("doods") -> {
+                        fullUrl.contains("playmogo") || fullUrl.contains("pendek") -> {
                             extractDoodLike(fullUrl, data, callback)
+                        }
+                        fullUrl.contains("doods") -> {
+                            extractDoodLike(fullUrl, data, callback)
+                            extractVidaraLike(fullUrl, data, callback)
                         }
                         else -> {
                             loadExtractor(fullUrl, data, subtitleCallback, callback)
+                            extractGeneric(fullUrl, data, callback)
                         }
                     }
                 } catch (_: Exception) {}
@@ -109,6 +114,54 @@ class KimcilOnlyProvider : MainAPI() {
 
         allJobs.awaitAll()
         return@coroutineScope true
+    }
+
+    private suspend fun extractVidaraLike(
+        url: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            val baseUrl = url.substringBefore("/e/")
+            val filecode = url.substringAfterLast("/e/").substringBefore("?")
+            if (filecode.isEmpty()) return
+            val response = app.post(
+                "$baseUrl/api/stream",
+                headers = mapOf(
+                    "Content-Type" to "application/json",
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "Referer" to url
+                ),
+                body = """{"filecode":"$filecode","device":"web"}"""
+            ).parsedSafe<VidaraStreamResponse>() ?: return
+            val streamUrl = response.streamingUrl ?: return
+            callback.invoke(
+                newExtractorLink(name, "Vidara", streamUrl, ExtractorLinkType.VIDEO) {
+                    this.referer = baseUrl
+                    this.quality = Qualities.Unknown.value
+                }
+            )
+        } catch (_: Exception) {}
+    }
+
+    private suspend fun extractGeneric(
+        url: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            val doc = app.get(url, referer = referer).document
+            val html = doc.html()
+            Regex("""https?://[^"'\s]+\.(m3u8|mp4)[^"'\s]*""").findAll(html).forEach { match ->
+                val videoUrl = match.value.replace("\\/", "/")
+                callback.invoke(
+                    newExtractorLink(name, "Direct", videoUrl, ExtractorLinkType.VIDEO) {
+                        this.referer = url
+                        this.quality = Qualities.Unknown.value
+                    }
+                )
+            }
+        } catch (_: Exception) {}
     }
 
     private suspend fun extractDoodLike(
@@ -223,7 +276,17 @@ open class ByseSXLocal : ExtractorApi() {
             "referer" to embedFrameUrl,
             "x-embed-parent" to (referer ?: mainUrl)
         )
-        val playback = app.get(playbackUrl, headers = playbackHeaders).parsedSafe<PlaybackRoot>()?.playback ?: return
+        var playback = app.get(playbackUrl, headers = playbackHeaders).parsedSafe<PlaybackRoot>()?.playback
+        if (playback == null) {
+            playback = try {
+                app.post(
+                    playbackUrl,
+                    headers = playbackHeaders + mapOf("Content-Type" to "application/json"),
+                    body = "{}"
+                ).parsedSafe<PlaybackRoot>()?.playback
+            } catch (_: Exception) { null }
+        }
+        if (playback == null) return
         try {
             val keyBytes = b64UrlDecode(playback.keyParts[0]) + b64UrlDecode(playback.keyParts[1])
             val ivBytes = b64UrlDecode(playback.iv)
@@ -243,3 +306,4 @@ data class PlaybackRoot(@JsonProperty("playback") val playback: Playback)
 data class Playback(@JsonProperty("iv") val iv: String, @JsonProperty("payload") val payload: String, @JsonProperty("key_parts") val keyParts: List<String>)
 data class PlaybackDecrypt(@JsonProperty("sources") val sources: List<PlaybackDecryptSource>)
 data class PlaybackDecryptSource(@JsonProperty("url") val url: String)
+data class VidaraStreamResponse(val streaming_url: String? = null)
