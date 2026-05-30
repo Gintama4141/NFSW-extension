@@ -150,7 +150,7 @@ class Kurakura21Provider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
-            val code = URI(url).path?.trimEnd('/')?.substringAfterLast('/') ?: return
+            val code = url.substringAfter("/e/", "").substringBefore("/").substringBefore("?")
             if (code.isEmpty()) return
 
             val baseUrl = runCatching {
