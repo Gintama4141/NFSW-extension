@@ -95,7 +95,6 @@ class KimcilOnlyProvider : MainAPI() {
     ): Boolean = coroutineScope {
         val allJobs = mutableListOf<kotlinx.coroutines.Deferred<Any>>()
 
-        // Player URLs: default, ?player=2, ?player=3, ?player=4
         val playerUrls = listOf(
             data,
             "$data?player=2",
@@ -119,7 +118,7 @@ class KimcilOnlyProvider : MainAPI() {
                             byseExtractor.getUrl(fullUrl, data, subtitleCallback, callback)
                         }
                         fullUrl.contains("playmogo") || fullUrl.contains("pendek") -> {
-                            extractVidsonic(fullUrl, data, callback)
+                            extractDoodLike(fullUrl, data, callback)
                         }
                         else -> {
                             loadExtractor(fullUrl, data, subtitleCallback, callback)
@@ -133,7 +132,7 @@ class KimcilOnlyProvider : MainAPI() {
         return@coroutineScope true
     }
 
-    private suspend fun extractVidsonic(
+    private suspend fun extractDoodLike(
         url: String,
         referer: String,
         callback: (ExtractorLink) -> Unit
@@ -141,78 +140,107 @@ class KimcilOnlyProvider : MainAPI() {
         try {
             val document = app.get(url, referer = referer).document
 
-            // Method 1: Find hex-encoded video URL in script
+            // Find pass_md5 endpoint in scripts
             val scripts = document.select("script")
             for (script in scripts) {
                 val scriptContent = script.html()
-                if (scriptContent.contains("_0x1") && scriptContent.contains("3966363533")) {
-                    val videoUrl = decodeHexEncodedUrl(scriptContent)
-                    if (videoUrl != null && videoUrl.contains(".m3u8")) {
-                        M3u8Helper.generateM3u8(
-                            name,
-                            videoUrl,
-                            url,
-                            headers = mapOf("Referer" to url)
-                        ).forEach(callback)
+
+                // Pattern: $.get('/pass_md5/{hash}/{token}', function(data)
+                val passMd5Match = Regex("""['"]\s*/pass_md5/([^'"]+)['"]""").find(scriptContent)
+                if (passMd5Match != null) {
+                    val passMd5Path = passMd5Match.groupValues[1]
+                    val passMd5Url = "$url/pass_md5/$passMd5Path"
+
+                    // Get cookies from the page
+                    val cookies = document.cookies()
+
+                    // Make request to pass_md5 endpoint
+                    val response = app.get(
+                        passMd5Url,
+                        headers = mapOf(
+                            "Referer" to url,
+                            "X-Requested-With" to "XMLHttpRequest"
+                        ),
+                        cookies = cookies
+                    ).text
+
+                    if (response.isNotBlank() && response.startsWith("http")) {
+                        // Generate random suffix and token
+                        val randomSuffix = (1..10).map { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".random() }.joinToString("")
+                        val tokenMatch = Regex("""token=([^&'"]+)""").find(scriptContent)
+                        val token = tokenMatch?.groupValues?.get(1) ?: ""
+                        val videoUrl = "$response$randomSuffix?token=$token&expiry=${System.currentTimeMillis()}"
+
+                        callback.invoke(
+                            newExtractorLink(
+                                source = name,
+                                name = "DoodStream",
+                                url = videoUrl,
+                                type = ExtractorLinkType.VIDEO
+                            ) {
+                                this.referer = url
+                                this.quality = Qualities.Unknown.value
+                            }
+                        )
+                        return
+                    }
+                }
+
+                // Alternative pattern: look for /dood?op=watch
+                val doodMatch = Regex("""['"]\s*/dood\?op=watch[^'"]*hash=([^&'"]+)[^'"]*token=([^&'"]+)['"]""").find(scriptContent)
+                if (doodMatch != null) {
+                    val hash = doodMatch.groupValues[1]
+                    val token = doodMatch.groupValues[2]
+                    val watchUrl = "$url/dood?op=watch&hash=$hash&token=$token&embed=true"
+
+                    val cookies = document.cookies()
+                    val response = app.get(
+                        watchUrl,
+                        headers = mapOf(
+                            "Referer" to url,
+                            "X-Requested-With" to "XMLHttpRequest"
+                        ),
+                        cookies = cookies
+                    ).text
+
+                    if (response.isNotBlank() && response.startsWith("http")) {
+                        val randomSuffix = (1..10).map { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".random() }.joinToString("")
+                        val videoUrl = "$response$randomSuffix?token=$token&expiry=${System.currentTimeMillis()}"
+
+                        callback.invoke(
+                            newExtractorLink(
+                                source = name,
+                                name = "DoodStream",
+                                url = videoUrl,
+                                type = ExtractorLinkType.VIDEO
+                            ) {
+                                this.referer = url
+                                this.quality = Qualities.Unknown.value
+                            }
+                        )
                         return
                     }
                 }
             }
 
-            // Method 2: Try to find M3U8 URL in page
+            // Fallback: try to find video URL directly in page
             val pageHtml = document.html()
-            val m3u8Match = Regex(""""(https?://[^"]+\.m3u8[^"]*)"""").find(pageHtml)
-            if (m3u8Match != null) {
-                val m3u8Url = m3u8Match.groupValues[1].replace("\\/", "/")
-                M3u8Helper.generateM3u8(
-                    name,
-                    m3u8Url,
-                    url,
-                    headers = mapOf("Referer" to url)
-                ).forEach(callback)
-                return
-            }
-
-            // Method 3: Try unpacked JS
-            val packedMatch = Regex("""eval\(function\(p,a,c,k,e,d\).+?</script>""", RegexOption.DOT_MATCHES_ALL).find(pageHtml)
-            if (packedMatch != null) {
-                val unpacked = getAndUnpack(packedMatch.value)
-                val unpackedM3u8 = Regex(""""(https?://[^"]+\.m3u8[^"]*)"""").find(unpacked)
-                if (unpackedM3u8 != null) {
-                    val m3u8Url = unpackedM3u8.groupValues[1].replace("\\/", "/")
-                    M3u8Helper.generateM3u8(
-                        name,
-                        m3u8Url,
-                        url,
-                        headers = mapOf("Referer" to url)
-                    ).forEach(callback)
-                }
+            val mp4Match = Regex(""""(https?://[^"]+\.mp4[^"]*)"""").find(pageHtml)
+            if (mp4Match != null) {
+                val videoUrl = mp4Match.groupValues[1].replace("\\/", "/")
+                callback.invoke(
+                    newExtractorLink(
+                        source = name,
+                        name = name,
+                        url = videoUrl,
+                        type = ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = url
+                        this.quality = Qualities.Unknown.value
+                    }
+                )
             }
         } catch (_: Exception) {}
-    }
-
-    private fun decodeHexEncodedUrl(scriptContent: String): String? {
-        try {
-            // Find the hex-encoded string between quotes after _0x1 =
-            val hexMatch = Regex("""_0x1\s*=\s*['"]([^'"]+)['"]""").find(scriptContent) ?: return null
-            val hexParts = hexMatch.groupValues[1].split("|")
-
-            // Decode hex parts to ASCII
-            val chars = hexParts.mapNotNull { hex ->
-                try {
-                    hex.chunked(2).map { it.toInt(16).toChar() }.joinToString("")
-                } catch (_: Exception) { null }
-            }
-
-            // Reverse the string and join
-            val decoded = chars.reversed().joinToString("")
-
-            // Extract URL from the decoded string
-            val urlMatch = Regex("""(https?://[^\s'"]+)""").find(decoded)
-            return urlMatch?.groupValues?.get(1)
-        } catch (_: Exception) {
-            return null
-        }
     }
 
     private fun parseDurationISO(duration: String?): Int? {
