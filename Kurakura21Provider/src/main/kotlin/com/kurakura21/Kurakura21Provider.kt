@@ -210,8 +210,8 @@ class Kurakura21Provider : MainAPI() {
             try {
                 responseText = app.get(playbackUrl, headers = mapOf(
                     "accept" to "*/*",
-                    "referer" to (embedFrameUrl ?: "$baseUrl/e/$code/"),
-                    "x-embed-parent" to mainUrl
+                    "referer" to embedFrameUrl,
+                    "x-embed-parent" to baseUrl
                 )).text
                 android.util.Log.d("K21", "GET playback response=${responseText.take(200)}")
             } catch (e: Exception) {
@@ -224,8 +224,8 @@ class Kurakura21Provider : MainAPI() {
                         playbackUrl,
                         headers = mapOf(
                             "accept" to "*/*",
-                            "referer" to (embedFrameUrl ?: "$baseUrl/e/$code/"),
-                            "x-embed-parent" to mainUrl,
+                            "referer" to embedFrameUrl,
+                            "x-embed-parent" to baseUrl,
                             "Content-Type" to "application/json"
                         ),
                         requestBody = body.toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
