@@ -159,31 +159,61 @@ class Kurakura21Provider : MainAPI() {
 
             val playbackUrl = "$baseUrl/api/videos/$code/embed/playback"
 
-            val fakeFingerprint = """{"fingerprint":{"token":"fp_android","viewer_id":"android_$code","device_id":"android_device","confidence":0.95}}"""
+            val fingerprintMap = mapOf(
+                "fingerprint" to mapOf(
+                    "token" to "fp_android",
+                    "viewer_id" to "android_$code",
+                    "device_id" to "android_device",
+                    "confidence" to 0.95
+                )
+            )
 
-            val response = app.post(
-                playbackUrl,
-                headers = mapOf(
-                    "Referer" to "$baseUrl/e/$code/",
-                    "x-embed-parent" to mainUrl,
-                    "Content-Type" to "application/json"
-                ),
-                requestBody = fakeFingerprint.toRequestBody("application/json".toMediaTypeOrNull())
-            ).text
+            val responseText = try {
+                app.post(
+                    playbackUrl,
+                    headers = mapOf(
+                        "Referer" to "$baseUrl/e/$code/",
+                        "x-embed-parent" to mainUrl
+                    ),
+                    json = fingerprintMap
+                ).text
+            } catch (_: Exception) {
+                val body = """{"fingerprint":{"token":"fp_android","viewer_id":"android_$code","device_id":"android_device","confidence":0.95}}"""
+                app.post(
+                    playbackUrl,
+                    headers = mapOf(
+                        "Referer" to "$baseUrl/e/$code/",
+                        "x-embed-parent" to mainUrl,
+                        "Content-Type" to "application/json"
+                    ),
+                    requestBody = body.toRequestBody("application/json".toMediaTypeOrNull())
+                ).text
+            }
 
-            val root = tryParseJson<Kr21PlaybackRoot>(response) ?: return
+            if (responseText.isBlank()) return
+
+            val root = tryParseJson<Kr21PlaybackRoot>(responseText) ?: return
             val pb = root.playback ?: return
 
             val decryptedJson = decryptKr21Payload(pb) ?: return
-            val source = tryParseJson<Kr21DecryptedSource>(decryptedJson) ?: return
-            val streamUrl = source.url ?: return
+            val source = tryParseJson<Kr21DecryptedSource>(decryptedJson)
+                ?: tryParseJson<Kr21DecryptedUrl>(decryptedJson)
+            val streamUrl = source?.url ?: return
 
-            M3u8Helper.generateM3u8(
-                "Kurakura21",
-                streamUrl,
-                baseUrl,
-                headers = mapOf("Referer" to baseUrl)
-            ).forEach(callback)
+            if (streamUrl.contains(".m3u8")) {
+                M3u8Helper.generateM3u8(
+                    "Kurakura21",
+                    streamUrl,
+                    baseUrl,
+                    headers = mapOf("Referer" to baseUrl)
+                ).forEach(callback)
+            } else {
+                callback.invoke(
+                    newExtractorLink("Kurakura21", "Kurakura21", streamUrl, ExtractorLinkType.VIDEO) {
+                        this.referer = baseUrl
+                    }
+                )
+            }
         } catch (_: Exception) {}
     }
 
@@ -241,4 +271,8 @@ data class Kr21PlaybackRoot(
 
 data class Kr21DecryptedSource(
     @JsonProperty("url") val url: String? = null
+)
+
+data class Kr21DecryptedUrl(
+    @JsonProperty("sources") val sources: List<Kr21DecryptedSource>? = null
 )
