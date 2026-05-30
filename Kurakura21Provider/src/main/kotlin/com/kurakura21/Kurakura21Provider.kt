@@ -111,7 +111,7 @@ class Kurakura21Provider : MainAPI() {
         if (postId != null) {
             val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
 
-            val jobs = mutableListOf<kotlinx.coroutines.Deferred<Unit>>()
+            val jobs = mutableListOf<kotlinx.coroutines.Deferred<Boolean>>()
 
             for (tabNum in 1..4) {
                 try {
@@ -127,13 +127,10 @@ class Kurakura21Provider : MainAPI() {
                         val iframeUrl = fixUrl(iframeSrc)
                         jobs.add(async(Dispatchers.IO) {
                             try {
-                                when {
-                                    iframeUrl.contains("kr21.click") -> {
-                                        extractKr21Click(iframeUrl, callback)
-                                    }
-                                    else -> {
-                                        loadExtractor(iframeUrl, data, subtitleCallback, callback)
-                                    }
+                                if (iframeUrl.contains("kr21.click")) {
+                                    extractKr21Click(iframeUrl, callback)
+                                } else {
+                                    loadExtractor(iframeUrl, data, subtitleCallback, callback)
                                 }
                             } catch (_: Exception) {}
                         })
@@ -150,7 +147,7 @@ class Kurakura21Provider : MainAPI() {
     private suspend fun extractKr21Click(
         url: String,
         callback: (ExtractorLink) -> Unit
-    ) {
+    ): Boolean {
         try {
             val code = URI(url).path?.trimEnd('/')?.substringAfterLast('/') ?: return
             if (code.isEmpty()) return
@@ -186,7 +183,9 @@ class Kurakura21Provider : MainAPI() {
                 baseUrl,
                 headers = mapOf("Referer" to baseUrl)
             ).forEach(callback)
+            return true
         } catch (_: Exception) {}
+        return false
     }
 
     private fun decryptKr21Payload(pb: Kr21Playback): String? {
