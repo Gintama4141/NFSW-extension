@@ -26,7 +26,8 @@ class KimcilOnlyProvider : MainAPI() {
 
     override val mainPage = mainPageOf(
         "$mainUrl/category/film-semi/" to "Film Semi",
-        "$mainUrl/category/live-apk/" to "Indo 18+"
+        "$mainUrl/category/viral/" to "Viral",
+        "$mainUrl/category/apk-lain/" to "APK Lain"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
@@ -34,42 +35,30 @@ class KimcilOnlyProvider : MainAPI() {
         val document = app.get(url).document
 
         val elements = document.select("article.item, .gmr-item-modulepost")
-
         val home = elements.mapNotNull { element ->
             val titleElement = element.selectFirst("h2.entry-title a, .entry-title a")
             val title = titleElement?.text() ?: return@mapNotNull null
             val link = titleElement.attr("href")
-
             val img = element.selectFirst("img")
             var image = img?.attr("data-src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
                 ?: img?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
             image = image?.replace(Regex("-\\d+x\\d+\\."), ".")
-
-            newMovieSearchResponse(title, link, TvType.NSFW) {
-                this.posterUrl = image
-            }
+            newMovieSearchResponse(title, link, TvType.NSFW) { this.posterUrl = image }
         }
         return newHomePageResponse(request.name, home, hasNext = elements.isNotEmpty())
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
-        val searchUrl = "$mainUrl/?s=$query"
-        val document = app.get(searchUrl).document
-
-        val elements = document.select("article.item, .gmr-item-modulepost")
-        return elements.mapNotNull { element ->
+        val document = app.get("$mainUrl/?s=$query").document
+        return document.select("article.item, .gmr-item-modulepost").mapNotNull { element ->
             val titleElement = element.selectFirst("h2.entry-title a, .entry-title a")
             val title = titleElement?.text() ?: return@mapNotNull null
             val link = titleElement.attr("href")
-
             val img = element.selectFirst("img")
             var image = img?.attr("data-src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
                 ?: img?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
             image = image?.replace(Regex("-\\d+x\\d+\\."), ".")
-
-            newMovieSearchResponse(title, link, TvType.NSFW) {
-                this.posterUrl = image
-            }
+            newMovieSearchResponse(title, link, TvType.NSFW) { this.posterUrl = image }
         }
     }
 
@@ -79,7 +68,6 @@ class KimcilOnlyProvider : MainAPI() {
         val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
         val plot = document.select(".entry-content p").joinToString("\n") { it.text() }.trim()
         val tags = document.select(".gmr-moviedata:contains(Genre:) a").map { it.text() }
-
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
             this.posterUrl = poster
             this.plot = plot
@@ -94,25 +82,17 @@ class KimcilOnlyProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
         val allJobs = mutableListOf<kotlinx.coroutines.Deferred<Any>>()
-
-        val playerUrls = listOf(
-            data,
-            "$data?player=2",
-            "$data?player=3",
-            "$data?player=4"
-        )
+        val playerUrls = listOf(data, "$data?player=2", "$data?player=3", "$data?player=4")
 
         playerUrls.forEach { playerUrl ->
             allJobs.add(async(Dispatchers.IO) {
                 try {
                     val document = app.get(playerUrl, referer = data).document
-
                     val iframeSrc = document.select("iframe[src]").mapNotNull {
                         it.attr("src").takeIf { src -> src.isNotBlank() }
                     }.firstOrNull() ?: return@async
 
                     val fullUrl = fixUrl(iframeSrc)
-
                     when {
                         fullUrl.contains("byse") -> {
                             byseExtractor.getUrl(fullUrl, data, subtitleCallback, callback)
@@ -139,39 +119,26 @@ class KimcilOnlyProvider : MainAPI() {
     ) {
         try {
             val document = app.get(url, referer = referer).document
-
-            // Find pass_md5 endpoint in scripts
             val scripts = document.select("script")
+
             for (script in scripts) {
                 val scriptContent = script.html()
-
-                // Pattern: $.get('/pass_md5/{hash}/{token}', function(data)
                 val passMd5Match = Regex("""['"]\s*/pass_md5/([^'"]+)['"]""").find(scriptContent)
                 if (passMd5Match != null) {
                     val passMd5Path = passMd5Match.groupValues[1]
-                    val passMd5Url = "$url/pass_md5/$passMd5Path"
-
+                    val baseUrl = url.substringBefore("/e/")
+                    val passMd5Url = "$baseUrl/pass_md5/$passMd5Path"
                     val response = app.get(
                         passMd5Url,
-                        headers = mapOf(
-                            "Referer" to url,
-                            "X-Requested-With" to "XMLHttpRequest"
-                        )
+                        headers = mapOf("Referer" to url, "X-Requested-With" to "XMLHttpRequest")
                     ).text
-
                     if (response.isNotBlank() && response.startsWith("http")) {
                         val randomSuffix = (1..10).map { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".random() }.joinToString("")
                         val tokenMatch = Regex("""token=([^&'"]+)""").find(scriptContent)
                         val token = tokenMatch?.groupValues?.get(1) ?: ""
                         val videoUrl = "$response$randomSuffix?token=$token&expiry=${System.currentTimeMillis()}"
-
                         callback.invoke(
-                            newExtractorLink(
-                                source = name,
-                                name = "DoodStream",
-                                url = videoUrl,
-                                type = ExtractorLinkType.VIDEO
-                            ) {
+                            newExtractorLink(name, "DoodStream", videoUrl, ExtractorLinkType.VIDEO) {
                                 this.referer = url
                                 this.quality = Qualities.Unknown.value
                             }
@@ -180,32 +147,21 @@ class KimcilOnlyProvider : MainAPI() {
                     }
                 }
 
-                // Alternative pattern: look for /dood?op=watch
                 val doodMatch = Regex("""['"]\s*/dood\?op=watch[^'"]*hash=([^&'"]+)[^'"]*token=([^&'"]+)['"]""").find(scriptContent)
                 if (doodMatch != null) {
                     val hash = doodMatch.groupValues[1]
                     val token = doodMatch.groupValues[2]
-                    val watchUrl = "$url/dood?op=watch&hash=$hash&token=$token&embed=true"
-
+                    val baseUrl = url.substringBefore("/e/")
+                    val watchUrl = "$baseUrl/dood?op=watch&hash=$hash&token=$token&embed=true"
                     val response = app.get(
                         watchUrl,
-                        headers = mapOf(
-                            "Referer" to url,
-                            "X-Requested-With" to "XMLHttpRequest"
-                        )
+                        headers = mapOf("Referer" to url, "X-Requested-With" to "XMLHttpRequest")
                     ).text
-
                     if (response.isNotBlank() && response.startsWith("http")) {
                         val randomSuffix = (1..10).map { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".random() }.joinToString("")
                         val videoUrl = "$response$randomSuffix?token=$token&expiry=${System.currentTimeMillis()}"
-
                         callback.invoke(
-                            newExtractorLink(
-                                source = name,
-                                name = "DoodStream",
-                                url = videoUrl,
-                                type = ExtractorLinkType.VIDEO
-                            ) {
+                            newExtractorLink(name, "DoodStream", videoUrl, ExtractorLinkType.VIDEO) {
                                 this.referer = url
                                 this.quality = Qualities.Unknown.value
                             }
@@ -215,33 +171,18 @@ class KimcilOnlyProvider : MainAPI() {
                 }
             }
 
-            // Fallback: try to find video URL directly in page
             val pageHtml = document.html()
             val mp4Match = Regex(""""(https?://[^"]+\.mp4[^"]*)"""").find(pageHtml)
             if (mp4Match != null) {
                 val videoUrl = mp4Match.groupValues[1].replace("\\/", "/")
                 callback.invoke(
-                    newExtractorLink(
-                        source = name,
-                        name = name,
-                        url = videoUrl,
-                        type = ExtractorLinkType.VIDEO
-                    ) {
+                    newExtractorLink(name, name, videoUrl, ExtractorLinkType.VIDEO) {
                         this.referer = url
                         this.quality = Qualities.Unknown.value
                     }
                 )
             }
         } catch (_: Exception) {}
-    }
-
-    private fun parseDurationISO(duration: String?): Int? {
-        if (duration.isNullOrBlank()) return null
-        val match = Regex("PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?").find(duration) ?: return null
-        val hours = match.groupValues[1].toIntOrNull() ?: 0
-        val minutes = match.groupValues[2].toIntOrNull() ?: 0
-        val seconds = match.groupValues[3].toIntOrNull() ?: 0
-        return hours * 3600 + minutes * 60 + seconds
     }
 }
 
@@ -259,50 +200,38 @@ open class ByseSXLocal : ExtractorApi() {
                 else -> ""
             }
             Base64.decode(fixed + pad, Base64.DEFAULT)
-        } catch (_: Exception) {
-            ByteArray(0)
-        }
+        } catch (_: Exception) { ByteArray(0) }
     }
 
-    private fun getBaseUrl(url: String): String {
-        return runCatching { URI(url).let { "${it.scheme}://${it.host}" } }.getOrDefault(url)
-    }
+    private fun getBaseUrl(url: String): String =
+        runCatching { URI(url).let { "${it.scheme}://${it.host}" } }.getOrDefault(url)
 
-    private fun getCodeFromUrl(url: String): String {
-        return runCatching { URI(url).path?.trimEnd('/')?.substringAfterLast('/') }.getOrNull() ?: ""
-    }
+    private fun getCodeFromUrl(url: String): String =
+        runCatching { URI(url).path?.trimEnd('/')?.substringAfterLast('/') }.getOrNull() ?: ""
 
     override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
         val refererUrl = getBaseUrl(url)
         val code = getCodeFromUrl(url)
         if (code.isEmpty()) return
-
         val detailsUrl = "$refererUrl/api/videos/$code/embed/details"
         val details = app.get(detailsUrl).parsedSafe<DetailsRoot>() ?: return
-
         val embedFrameUrl = details.embedFrameUrl
         val embedBase = getBaseUrl(embedFrameUrl)
         val embedCode = getCodeFromUrl(embedFrameUrl)
-
         val playbackUrl = "$embedBase/api/videos/$embedCode/embed/playback"
         val playbackHeaders = mapOf(
             "accept" to "*/*",
             "referer" to embedFrameUrl,
             "x-embed-parent" to (referer ?: mainUrl)
         )
-
         val playback = app.get(playbackUrl, headers = playbackHeaders).parsedSafe<PlaybackRoot>()?.playback ?: return
-
         try {
             val keyBytes = b64UrlDecode(playback.keyParts[0]) + b64UrlDecode(playback.keyParts[1])
             val ivBytes = b64UrlDecode(playback.iv)
             val cipherBytes = b64UrlDecode(playback.payload)
-
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), GCMParameterSpec(128, ivBytes))
-
             val jsonStr = String(cipher.doFinal(cipherBytes), Charsets.UTF_8).removePrefix("\uFEFF")
-
             tryParseJson<PlaybackDecrypt>(jsonStr)?.sources?.firstOrNull()?.url?.let { streamUrl ->
                 M3u8Helper.generateM3u8(name, streamUrl, refererUrl, headers = mapOf("Referer" to refererUrl)).forEach(callback)
             }
