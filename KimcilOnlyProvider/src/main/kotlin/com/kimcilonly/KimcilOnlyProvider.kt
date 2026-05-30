@@ -132,9 +132,9 @@ class KimcilOnlyProvider : MainAPI() {
                     "X-Requested-With" to "XMLHttpRequest",
                     "Referer" to url
                 ),
-                body = """{"filecode":"$filecode","device":"web"}"""
+                requestBody = """{"filecode":"$filecode","device":"web"}"""
             ).parsedSafe<VidaraStreamResponse>() ?: return
-            val streamUrl = response.streamingUrl ?: return
+            val streamUrl = response.streaming_url ?: return
             callback.invoke(
                 newExtractorLink(name, "Vidara", streamUrl, ExtractorLinkType.VIDEO) {
                     this.referer = baseUrl
@@ -282,7 +282,7 @@ open class ByseSXLocal : ExtractorApi() {
                 app.post(
                     playbackUrl,
                     headers = playbackHeaders + mapOf("Content-Type" to "application/json"),
-                    body = "{}"
+                    requestBody = "{}"
                 ).parsedSafe<PlaybackRoot>()?.playback
             } catch (_: Exception) { null }
         }
