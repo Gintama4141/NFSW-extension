@@ -106,44 +106,64 @@ class Kurakura21Provider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
-        val document = app.get(data).document
+        android.util.Log.d("K21", "loadLinks data=$data")
+        try {
+            val document = app.get(data).document
+            android.util.Log.d("K21", "page loaded, html length=${document.html().length}")
 
-        val postId = document.selectFirst("#muvipro_player_content_id")?.attr("data-id") ?: run {
-            document.selectFirst("[data-id]")?.attr("data-id")
-        }
-
-        if (postId != null) {
-            val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
-
-            val jobs = mutableListOf<kotlinx.coroutines.Deferred<Unit>>()
-
-            for (tabNum in 1..4) {
-                try {
-                    val tabName = "p$tabNum"
-                    val response = app.post(
-                        ajaxUrl,
-                        requestBody = "action=muvipro_player_content&tab=$tabName&post_id=$postId"
-                            .toRequestBody("application/x-www-form-urlencoded; charset=UTF-8".toMediaTypeOrNull())
-                    ).document
-
-                    val iframeSrc = response.selectFirst("iframe")?.attr("src")?.takeIf { it.isNotBlank() }
-                    if (iframeSrc != null) {
-                        val iframeUrl = fixUrl(iframeSrc)
-                        jobs.add(async(Dispatchers.IO) {
-                            try {
-                                if (iframeUrl.contains("kr21.click")) {
-                                    extractKr21Click(iframeUrl, callback)
-                                } else {
-                                    loadExtractor(iframeUrl, data, subtitleCallback, callback)
-                                }
-                            } catch (_: Exception) {}
-                            Unit
-                        })
-                    }
-                } catch (_: Exception) {}
+            val postId = document.selectFirst("#muvipro_player_content_id")?.attr("data-id") ?: run {
+                document.selectFirst("[data-id]")?.attr("data-id")
             }
+            android.util.Log.d("K21", "postId=$postId")
 
-            jobs.awaitAll()
+            if (postId != null) {
+                val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
+                val jobs = mutableListOf<kotlinx.coroutines.Deferred<Unit>>()
+
+                for (tabNum in 1..4) {
+                    try {
+                        val tabName = "p$tabNum"
+                        android.util.Log.d("K21", "AJAX tab=$tabName postId=$postId")
+                        val response = app.post(
+                            ajaxUrl,
+                            requestBody = "action=muvipro_player_content&tab=$tabName&post_id=$postId"
+                                .toRequestBody("application/x-www-form-urlencoded; charset=UTF-8".toMediaTypeOrNull())
+                        ).text
+                        android.util.Log.d("K21", "AJAX response[$tabName]=${response.take(300)}")
+
+                        val iframeSrc = Regex("""src=["']([^"']+)["']""").find(response)?.groupValues?.get(1)
+                        android.util.Log.d("K21", "iframeSrc[$tabName]=$iframeSrc")
+
+                        if (iframeSrc != null) {
+                            val iframeUrl = fixUrl(iframeSrc)
+                            android.util.Log.d("K21", "iframeUrl[$tabName]=$iframeUrl")
+                            jobs.add(async(Dispatchers.IO) {
+                                try {
+                                    if (iframeUrl.contains("kr21.click")) {
+                                        android.util.Log.d("K21", "calling extractKr21Click for $iframeUrl")
+                                        extractKr21Click(iframeUrl, callback)
+                                    } else {
+                                        android.util.Log.d("K21", "calling loadExtractor for $iframeUrl")
+                                        loadExtractor(iframeUrl, data, subtitleCallback, callback)
+                                    }
+                                } catch (e: Exception) {
+                                    android.util.Log.e("K21", "extract error: ${e.message}")
+                                }
+                                Unit
+                            })
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.e("K21", "AJAX error tab=$tabName: ${e.message}")
+                    }
+                }
+
+                jobs.awaitAll()
+                android.util.Log.d("K21", "all jobs completed, jobs.size=${jobs.size}")
+            } else {
+                android.util.Log.e("K21", "postId is null!")
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("K21", "loadLinks error: ${e.message}", e)
         }
 
         return@coroutineScope true
