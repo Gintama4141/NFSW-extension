@@ -151,21 +151,15 @@ class KimcilOnlyProvider : MainAPI() {
                     val passMd5Path = passMd5Match.groupValues[1]
                     val passMd5Url = "$url/pass_md5/$passMd5Path"
 
-                    // Get cookies from the page
-                    val cookies = document.cookies()
-
-                    // Make request to pass_md5 endpoint
                     val response = app.get(
                         passMd5Url,
                         headers = mapOf(
                             "Referer" to url,
                             "X-Requested-With" to "XMLHttpRequest"
-                        ),
-                        cookies = cookies
+                        )
                     ).text
 
                     if (response.isNotBlank() && response.startsWith("http")) {
-                        // Generate random suffix and token
                         val randomSuffix = (1..10).map { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".random() }.joinToString("")
                         val tokenMatch = Regex("""token=([^&'"]+)""").find(scriptContent)
                         val token = tokenMatch?.groupValues?.get(1) ?: ""
@@ -193,14 +187,12 @@ class KimcilOnlyProvider : MainAPI() {
                     val token = doodMatch.groupValues[2]
                     val watchUrl = "$url/dood?op=watch&hash=$hash&token=$token&embed=true"
 
-                    val cookies = document.cookies()
                     val response = app.get(
                         watchUrl,
                         headers = mapOf(
                             "Referer" to url,
                             "X-Requested-With" to "XMLHttpRequest"
-                        ),
-                        cookies = cookies
+                        )
                     ).text
 
                     if (response.isNotBlank() && response.startsWith("http")) {
