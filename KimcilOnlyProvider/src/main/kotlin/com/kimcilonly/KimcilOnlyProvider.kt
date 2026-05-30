@@ -135,15 +135,10 @@ class KimcilOnlyProvider : MainAPI() {
                     "X-Requested-With" to "XMLHttpRequest",
                     "Referer" to url
                 ),
-                requestBody = """{"filecode":"$filecode","device":"web"}""".toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
+                requestBody = """{"filecode":"$filecode","device":"android"}""".toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
             ).parsedSafe<VidaraStreamResponse>() ?: return
             val streamUrl = response.streaming_url ?: return
-            callback.invoke(
-                newExtractorLink(name, "Vidara", streamUrl, ExtractorLinkType.VIDEO) {
-                    this.referer = baseUrl
-                    this.quality = Qualities.Unknown.value
-                }
-            )
+            M3u8Helper.generateM3u8(name, streamUrl, baseUrl, headers = mapOf("Referer" to baseUrl)).forEach(callback)
         } catch (_: Exception) {}
     }
 
