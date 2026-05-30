@@ -206,11 +206,13 @@ class Kurakura21Provider : MainAPI() {
 
             val body = """{"fingerprint":{"token":"fp_android","viewer_id":"android_$code","device_id":"android_device","confidence":0.95}}"""
 
+            val referer = embedFrameUrl ?: "$baseUrl/e/$code/"
+
             var responseText = ""
             try {
                 responseText = app.get(playbackUrl, headers = mapOf(
                     "accept" to "*/*",
-                    "referer" to embedFrameUrl,
+                    "referer" to referer,
                     "x-embed-parent" to baseUrl
                 )).text
                 android.util.Log.d("K21", "GET playback response=${responseText.take(200)}")
@@ -224,7 +226,7 @@ class Kurakura21Provider : MainAPI() {
                         playbackUrl,
                         headers = mapOf(
                             "accept" to "*/*",
-                            "referer" to embedFrameUrl,
+                            "referer" to referer,
                             "x-embed-parent" to baseUrl,
                             "Content-Type" to "application/json"
                         ),
