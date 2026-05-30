@@ -153,7 +153,7 @@ class Kurakura21Provider : MainAPI() {
                             })
                         }
                     } catch (e: Exception) {
-                        android.util.Log.e("K21", "AJAX error tab=$tabName: ${e.message}")
+                        android.util.Log.e("K21", "AJAX error tab=$tabNum: ${e.message}")
                     }
                 }
 
