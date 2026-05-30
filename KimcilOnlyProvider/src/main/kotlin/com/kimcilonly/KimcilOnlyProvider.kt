@@ -157,9 +157,8 @@ class KimcilOnlyProvider : MainAPI() {
             val movieId = doc.selectFirst("#embed-player")?.attr("data-movie-id") ?: return
             val serverId = doc.selectFirst("a.server")?.attr("data-id") ?: return
             val response = app.get(
-                "$baseUrl/ajax/get_stream_link",
-                headers = mapOf("X-Requested-With" to "XMLHttpRequest", "Referer" to url),
-                data = mapOf("id" to serverId, "movie" to movieId, "is_init" to "", "captcha" to "", "ref" to "")
+                "$baseUrl/ajax/get_stream_link?id=$serverId&movie=$movieId&is_init=&captcha=&ref=",
+                headers = mapOf("X-Requested-With" to "XMLHttpRequest", "Referer" to url)
             ).parsedSafe<PecahResponse>() ?: return
             val link = response.data?.link ?: return
             when {
@@ -167,6 +166,26 @@ class KimcilOnlyProvider : MainAPI() {
                 link.contains("doods") -> { extractDoodLike(link, referer, callback); extractVidaraLike(link, referer, callback) }
                 link.contains("playmogo") || link.contains("pendek") -> extractDoodLike(link, referer, callback)
                 else -> { loadExtractor(link, referer, subtitleCallback, callback); extractGeneric(link, referer, callback) }
+            }
+        } catch (_: Exception) {}
+    }
+
+    private suspend fun extractGeneric(
+        url: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            val doc = app.get(url, referer = referer).document
+            val html = doc.html()
+            Regex("""https?://[^"'\s]+\.(m3u8|mp4)[^"'\s]*""").findAll(html).forEach { match ->
+                val videoUrl = match.value.replace("\\/", "/")
+                callback.invoke(
+                    newExtractorLink(name, "Direct", videoUrl, ExtractorLinkType.VIDEO) {
+                        this.referer = url
+                        this.quality = Qualities.Unknown.value
+                    }
+                )
             }
         } catch (_: Exception) {}
     }
