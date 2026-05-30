@@ -196,9 +196,9 @@ class Kurakura21Provider : MainAPI() {
             val pb = root.playback ?: return
 
             val decryptedJson = decryptKr21Payload(pb) ?: return
-            val source = tryParseJson<Kr21DecryptedSource>(decryptedJson)
-                ?: tryParseJson<Kr21DecryptedUrl>(decryptedJson)
-            val streamUrl = source?.url ?: return
+            val streamUrl = tryParseJson<Kr21DecryptedSource>(decryptedJson)?.url
+                ?: tryParseJson<Kr21DecryptedUrl>(decryptedJson)?.sources?.firstOrNull()?.url
+                ?: return
 
             if (streamUrl.contains(".m3u8")) {
                 M3u8Helper.generateM3u8(
