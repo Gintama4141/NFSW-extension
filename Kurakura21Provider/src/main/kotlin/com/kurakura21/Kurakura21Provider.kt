@@ -155,16 +155,16 @@ class Kurakura21Provider : MainAPI() {
     ) {
         try {
             val code = url.substringAfter("/e/", "").substringBefore("/").substringBefore("?")
-            if (code.isEmpty()) return
+            if (code.isEmpty()) { android.util.Log.e("K21", "empty code from $url"); return }
 
             val baseUrl = runCatching {
                 URI(url).let { "${it.scheme}://${it.host}" }
             }.getOrDefault(url)
+            android.util.Log.d("K21", "code=$code baseUrl=$baseUrl")
 
             val detailsUrl = "$baseUrl/api/videos/$code/embed/details"
-            val details = app.get(detailsUrl, headers = mapOf(
-                "Referer" to mainUrl
-            )).text
+            val details = app.get(detailsUrl, headers = mapOf("Referer" to mainUrl)).text
+            android.util.Log.d("K21", "details=$details")
             if (details.isBlank()) return
 
             val detailsJson = runCatching { mapper.readValue<ByseDetailsRoot>(details) }.getOrNull()
@@ -175,8 +175,11 @@ class Kurakura21Provider : MainAPI() {
             val embedCode = embedFrameUrl?.let {
                 it.substringAfterLast("/").substringBefore("?")
             } ?: code
+            android.util.Log.d("K21", "embedFrameUrl=$embedFrameUrl embedBase=$embedBase embedCode=$embedCode")
 
             val playbackUrl = "$embedBase/api/videos/$embedCode/embed/playback"
+            android.util.Log.d("K21", "playbackUrl=$playbackUrl")
+
             val body = """{"fingerprint":{"token":"fp_android","viewer_id":"android_$code","device_id":"android_device","confidence":0.95}}"""
 
             var responseText = ""
@@ -186,7 +189,10 @@ class Kurakura21Provider : MainAPI() {
                     "referer" to (embedFrameUrl ?: "$baseUrl/e/$code/"),
                     "x-embed-parent" to mainUrl
                 )).text
-            } catch (_: Exception) {}
+                android.util.Log.d("K21", "GET playback response=${responseText.take(200)}")
+            } catch (e: Exception) {
+                android.util.Log.e("K21", "GET playback failed: ${e.message}")
+            }
 
             if (responseText.isBlank() || responseText.contains("error")) {
                 try {
@@ -200,24 +206,34 @@ class Kurakura21Provider : MainAPI() {
                         ),
                         requestBody = body.toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
                     ).text
-                } catch (_: Exception) {}
+                    android.util.Log.d("K21", "POST playback response=${responseText.take(200)}")
+                } catch (e: Exception) {
+                    android.util.Log.e("K21", "POST playback failed: ${e.message}")
+                }
             }
 
-            if (responseText.isBlank() || responseText.contains("error")) return
+            if (responseText.isBlank() || responseText.contains("error")) {
+                android.util.Log.e("K21", "no valid playback response"); return
+            }
 
-            val root = runCatching { mapper.readValue<Kr21PlaybackRoot>(responseText) }.getOrNull() ?: return
-            val pb = root.playback ?: return
+            val root = runCatching { mapper.readValue<Kr21PlaybackRoot>(responseText) }.getOrNull()
+            if (root == null) { android.util.Log.e("K21", "json parse failed"); return }
+            val pb = root.playback
+            if (pb == null) { android.util.Log.e("K21", "playback is null"); return }
+            android.util.Log.d("K21", "version=${pb.version} keyParts=${pb.keyParts.size}")
 
-            val decryptedJson = decryptKr21Payload(pb) ?: return
+            val decryptedJson = decryptKr21Payload(pb)
+            if (decryptedJson == null) { android.util.Log.e("K21", "decrypt failed"); return }
+            android.util.Log.d("K21", "decrypted=${decryptedJson.take(200)}")
+
             val streamUrl = runCatching { mapper.readValue<Kr21DecryptedSource>(decryptedJson) }.getOrNull()?.url
                 ?: runCatching { mapper.readValue<Kr21DecryptedUrl>(decryptedJson) }.getOrNull()?.sources?.firstOrNull()?.url
-                ?: return
+            if (streamUrl == null) { android.util.Log.e("K21", "streamUrl is null"); return }
+            android.util.Log.d("K21", "streamUrl=$streamUrl")
 
             if (streamUrl.contains(".m3u8")) {
                 M3u8Helper.generateM3u8(
-                    "Kurakura21",
-                    streamUrl,
-                    embedBase,
+                    "Kurakura21", streamUrl, embedBase,
                     headers = mapOf("Referer" to embedBase)
                 ).forEach(callback)
             } else {
@@ -227,7 +243,10 @@ class Kurakura21Provider : MainAPI() {
                     }
                 )
             }
-        } catch (_: Exception) {}
+            android.util.Log.d("K21", "SUCCESS! callback called")
+        } catch (e: Exception) {
+            android.util.Log.e("K21", "FATAL: ${e.message}", e)
+        }
     }
 
     private fun decryptKr21Payload(pb: Kr21Playback): String? {
