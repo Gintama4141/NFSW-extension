@@ -106,6 +106,9 @@ class KimcilOnlyProvider : MainAPI() {
                             extractDoodLike(fullUrl, data, callback)
                             extractVidaraLike(fullUrl, data, callback)
                         }
+                        fullUrl.contains("pecah") -> {
+                            extractPecahLike(fullUrl, data, subtitleCallback, callback)
+                        }
                         else -> {
                             loadExtractor(fullUrl, data, subtitleCallback, callback)
                             extractGeneric(fullUrl, data, callback)
@@ -142,22 +145,28 @@ class KimcilOnlyProvider : MainAPI() {
         } catch (_: Exception) {}
     }
 
-    private suspend fun extractGeneric(
+    private suspend fun extractPecahLike(
         url: String,
         referer: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
         try {
+            val baseUrl = url.substringBefore("/embed")
             val doc = app.get(url, referer = referer).document
-            val html = doc.html()
-            Regex("""https?://[^"'\s]+\.(m3u8|mp4)[^"'\s]*""").findAll(html).forEach { match ->
-                val videoUrl = match.value.replace("\\/", "/")
-                callback.invoke(
-                    newExtractorLink(name, "Direct", videoUrl, ExtractorLinkType.VIDEO) {
-                        this.referer = url
-                        this.quality = Qualities.Unknown.value
-                    }
-                )
+            val movieId = doc.selectFirst("#embed-player")?.attr("data-movie-id") ?: return
+            val serverId = doc.selectFirst("a.server")?.attr("data-id") ?: return
+            val response = app.get(
+                "$baseUrl/ajax/get_stream_link",
+                headers = mapOf("X-Requested-With" to "XMLHttpRequest", "Referer" to url),
+                data = mapOf("id" to serverId, "movie" to movieId, "is_init" to "", "captcha" to "", "ref" to "")
+            ).parsedSafe<PecahResponse>() ?: return
+            val link = response.data?.link ?: return
+            when {
+                link.contains("byse") -> byseExtractor.getUrl(link, referer, subtitleCallback, callback)
+                link.contains("doods") -> { extractDoodLike(link, referer, callback); extractVidaraLike(link, referer, callback) }
+                link.contains("playmogo") || link.contains("pendek") -> extractDoodLike(link, referer, callback)
+                else -> { loadExtractor(link, referer, subtitleCallback, callback); extractGeneric(link, referer, callback) }
             }
         } catch (_: Exception) {}
     }
@@ -305,3 +314,5 @@ data class Playback(@JsonProperty("iv") val iv: String, @JsonProperty("payload")
 data class PlaybackDecrypt(@JsonProperty("sources") val sources: List<PlaybackDecryptSource>)
 data class PlaybackDecryptSource(@JsonProperty("url") val url: String)
 data class VidaraStreamResponse(val streaming_url: String? = null)
+data class PecahResponse(val success: Boolean, val data: PecahData?)
+data class PecahData(val link: String?)
