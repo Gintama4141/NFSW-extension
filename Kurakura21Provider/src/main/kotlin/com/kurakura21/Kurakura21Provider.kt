@@ -111,9 +111,13 @@ class Kurakura21Provider : MainAPI() {
             val document = app.get(data).document
             android.util.Log.d("K21", "page loaded, html length=${document.html().length}")
 
-            val postId = document.selectFirst("#muvipro_player_content_id")?.attr("data-id") ?: run {
-                document.selectFirst("[data-id]")?.attr("data-id")
-            }
+            val postId = document.selectFirst("#muvipro_player_content_id")?.attr("data-id")
+                ?: document.selectFirst("[data-id]")?.attr("data-id")
+                ?: run {
+                    val html = document.html()
+                    val m = Regex("""post_id["\s:=]+["']?(\d+)""").find(html)
+                    m?.groupValues?.get(1)
+                }
             android.util.Log.d("K21", "postId=$postId")
 
             if (postId != null) {
