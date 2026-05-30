@@ -4,6 +4,9 @@ import android.util.Base64
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.nicehttp.RequestBodyTypes
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -132,7 +135,7 @@ class KimcilOnlyProvider : MainAPI() {
                     "X-Requested-With" to "XMLHttpRequest",
                     "Referer" to url
                 ),
-                requestBody = """{"filecode":"$filecode","device":"web"}"""
+                requestBody = """{"filecode":"$filecode","device":"web"}""".toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
             ).parsedSafe<VidaraStreamResponse>() ?: return
             val streamUrl = response.streaming_url ?: return
             callback.invoke(
@@ -282,7 +285,7 @@ open class ByseSXLocal : ExtractorApi() {
                 app.post(
                     playbackUrl,
                     headers = playbackHeaders + mapOf("Content-Type" to "application/json"),
-                    requestBody = "{}"
+                    requestBody = "{}".toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
                 ).parsedSafe<PlaybackRoot>()?.playback
             } catch (_: Exception) { null }
         }
