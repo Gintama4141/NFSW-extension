@@ -25,9 +25,8 @@ class KimcilOnlyProvider : MainAPI() {
     private val byseExtractor by lazy { ByseSXLocal() }
 
     override val mainPage = mainPageOf(
-        "$mainUrl/category/film-semi/" to "Film Semi",
-        "$mainUrl/category/viral/" to "Viral",
-        "$mainUrl/category/apk-lain/" to "APK Lain"
+        "$mainUrl/category/live-apk/" to "Viral",
+        "$mainUrl/category/film-semi/" to "Film Semi"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
@@ -97,7 +96,7 @@ class KimcilOnlyProvider : MainAPI() {
                         fullUrl.contains("byse") -> {
                             byseExtractor.getUrl(fullUrl, data, subtitleCallback, callback)
                         }
-                        fullUrl.contains("playmogo") || fullUrl.contains("pendek") -> {
+                        fullUrl.contains("playmogo") || fullUrl.contains("pendek") || fullUrl.contains("doods") -> {
                             extractDoodLike(fullUrl, data, callback)
                         }
                         else -> {
