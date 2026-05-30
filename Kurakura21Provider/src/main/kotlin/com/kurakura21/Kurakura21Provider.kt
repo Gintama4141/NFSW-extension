@@ -191,8 +191,8 @@ class Kurakura21Provider : MainAPI() {
             android.util.Log.d("K21", "details=$details")
             if (details.isBlank()) return
 
-            val detailsJson = runCatching { mapper.readValue<ByseDetailsRoot>(details) }.getOrNull()
-            val embedFrameUrl = detailsJson?.embedFrameUrl
+            val embedFrameUrl = Regex(""""embed_frame_url"\s*:\s*"([^"]+)"""").find(details)?.groupValues?.get(1)
+            android.util.Log.d("K21", "embedFrameUrl=$embedFrameUrl")
             val embedBase = embedFrameUrl?.let {
                 runCatching { URI(it).let { u -> "${u.scheme}://${u.host}" } }.getOrNull()
             } ?: baseUrl
@@ -240,13 +240,21 @@ class Kurakura21Provider : MainAPI() {
                 android.util.Log.e("K21", "no valid playback response"); return
             }
 
-            val root = runCatching { mapper.readValue<Kr21PlaybackRoot>(responseText) }.getOrNull()
-            if (root == null) { android.util.Log.e("K21", "json parse failed"); return }
-            val pb = root.playback
-            if (pb == null) { android.util.Log.e("K21", "playback is null"); return }
-            android.util.Log.d("K21", "version=${pb.version} keyParts=${pb.keyParts.size}")
+            android.util.Log.d("K21", "POST playback response=${responseText.take(200)}")
 
-            val decryptedJson = decryptKr21Payload(pb)
+            val iv = Regex(""""iv"\s*:\s*"([^"]+)"""").find(responseText)?.groupValues?.get(1)
+            val payload = Regex(""""payload"\s*:\s*"([^"]+)"""").find(responseText)?.groupValues?.get(1)
+            val version = Regex(""""version"\s*:\s*"([^"]+)"""").find(responseText)?.groupValues?.get(1)
+            val keyPartsRaw = Regex(""""key_parts"\s*:\s*\[([^\]]+)\]""").find(responseText)?.groupValues?.get(1) ?: ""
+            val keyParts = Regex(""""([^"]+)"""").findAll(keyPartsRaw).map { it.groupValues[1] }.toList()
+
+            android.util.Log.d("K21", "iv=$iv payload=${payload?.take(20)} version=$version keyParts=${keyParts.size}")
+
+            if (iv == null || payload == null || version == null || keyParts.isEmpty()) {
+                android.util.Log.e("K21", "failed to parse playback fields"); return
+            }
+
+            val decryptedJson = decryptKr21Payload(iv, payload, version, keyParts)
             if (decryptedJson == null) { android.util.Log.e("K21", "decrypt failed"); return }
             android.util.Log.d("K21", "decrypted=${decryptedJson.take(200)}")
 
@@ -273,26 +281,24 @@ class Kurakura21Provider : MainAPI() {
         }
     }
 
-    private fun decryptKr21Payload(pb: Kr21Playback): String? {
+    private fun decryptKr21Payload(iv: String, payload: String, version: String, keyParts: List<String>): String? {
         return try {
-            val parts = pb.keyParts
-            val ver = pb.version?.trim() ?: ""
-            val verNum = ver.toIntOrNull()
+            val verNum = version.trim().toIntOrNull()
             val idx1: Int
             val idx2: Int
-            if (verNum != null && verNum >= 1 && verNum <= 20 && parts.size >= 30) {
+            if (verNum != null && verNum >= 1 && verNum <= 20 && keyParts.size >= 30) {
                 idx1 = verNum - 1
                 idx2 = 30 - verNum
             } else {
                 return null
             }
-            val p1 = b64UrlDecode(parts[idx1])
-            val p2 = b64UrlDecode(parts[idx2])
+            val p1 = b64UrlDecode(keyParts[idx1])
+            val p2 = b64UrlDecode(keyParts[idx2])
             val keyBytes = p1 + p2
             if (keyBytes.size < 32) return null
             val aesKey = keyBytes.copyOf(32)
-            val ivBytes = b64UrlDecode(pb.iv)
-            val cipherBytes = b64UrlDecode(pb.payload)
+            val ivBytes = b64UrlDecode(iv)
+            val cipherBytes = b64UrlDecode(payload)
 
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(128, ivBytes))
