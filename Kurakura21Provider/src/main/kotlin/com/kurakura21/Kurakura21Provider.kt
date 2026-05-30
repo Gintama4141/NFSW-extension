@@ -2,9 +2,10 @@ package com.kurakura21
 
 import android.util.Base64
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -17,6 +18,8 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 class Kurakura21Provider : MainAPI() {
+
+    private val mapper = jacksonObjectMapper()
 
     override var name = "Kurakura21"
     override var mainUrl = "https://kurakura21.net"
@@ -192,12 +195,12 @@ class Kurakura21Provider : MainAPI() {
 
             if (responseText.isBlank()) return
 
-            val root = tryParseJson<Kr21PlaybackRoot>(responseText) ?: return
+            val root = runCatching { mapper.readValue<Kr21PlaybackRoot>(responseText) }.getOrNull() ?: return
             val pb = root.playback ?: return
 
             val decryptedJson = decryptKr21Payload(pb) ?: return
-            val streamUrl = tryParseJson<Kr21DecryptedSource>(decryptedJson)?.url
-                ?: tryParseJson<Kr21DecryptedUrl>(decryptedJson)?.sources?.firstOrNull()?.url
+            val streamUrl = runCatching { mapper.readValue<Kr21DecryptedSource>(decryptedJson) }.getOrNull()?.url
+                ?: runCatching { mapper.readValue<Kr21DecryptedUrl>(decryptedJson) }.getOrNull()?.sources?.firstOrNull()?.url
                 ?: return
 
             if (streamUrl.contains(".m3u8")) {
