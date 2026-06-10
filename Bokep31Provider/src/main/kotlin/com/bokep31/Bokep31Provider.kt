@@ -139,24 +139,49 @@ class Bokep31Provider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
-            Log.d("Bokep31", "extractDoodLike: fetching $url")
-            val document = app.get(url, referer = referer).document
+            val fetchUrl = if (url.contains("/e/")) url.replace("/e/", "/d/") else url
+            Log.d("Bokep31", "extractDoodLike: fetching $fetchUrl")
+            val document = app.get(fetchUrl, referer = referer).document
             val scripts = document.select("script")
             Log.d("Bokep31", "extractDoodLike: found ${scripts.size} scripts")
             val pageHtml = document.html()
 
+            Log.d("Bokep31", "extractDoodLike: trying packer decoder")
+            val decodedScript = decodePackerScript(pageHtml)
+            if (decodedScript != null) {
+                Log.d("Bokep31", "extractDoodLike: packer decoded, length=${decodedScript.length}")
+                val m3u8InDecoded = Regex("""https?://[^"'\s]+\.m3u8[^"'\s]*""").find(decodedScript)
+                if (m3u8InDecoded != null) {
+                    val videoUrl = m3u8InDecoded.value.replace("\\/", "/")
+                    Log.d("Bokep31", "extractDoodLike: [packer] m3u8 = ${videoUrl.take(150)}")
+                    M3u8Helper.generateM3u8(name, videoUrl, fetchUrl, headers = mapOf("Referer" to fetchUrl)).forEach(callback)
+                    return
+                }
+                val mp4InDecoded = Regex("""https?://[^"'\s]+\.mp4[^"'\s]*""").find(decodedScript)
+                if (mp4InDecoded != null) {
+                    val videoUrl = mp4InDecoded.value.replace("\\/", "/")
+                    Log.d("Bokep31", "extractDoodLike: [packer] mp4 = ${videoUrl.take(150)}")
+                    callback.invoke(
+                        newExtractorLink(name, name, videoUrl, ExtractorLinkType.VIDEO) {
+                            this.referer = fetchUrl
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
+                    return
+                }
+            }
+
             for (script in scripts) {
                 val scriptContent = script.html()
-
                 val passMd5Path = findPassMd5(scriptContent)
                 if (passMd5Path != null) {
                     Log.d("Bokep31", "extractDoodLike: pass_md5 path = $passMd5Path")
-                    val baseUrl = url.substringBefore("/e/").substringBefore("/d/")
+                    val baseUrl = fetchUrl.substringBefore("/e/").substringBefore("/d/")
                     val passMd5Url = "$baseUrl/pass_md5/$passMd5Path"
                     Log.d("Bokep31", "extractDoodLike: fetching $passMd5Url")
                     val response = app.get(
                         passMd5Url,
-                        headers = mapOf("Referer" to url, "X-Requested-With" to "XMLHttpRequest")
+                        headers = mapOf("Referer" to fetchUrl, "X-Requested-With" to "XMLHttpRequest")
                     ).text
                     Log.d("Bokep31", "extractDoodLike: pass_md5 response = ${response.take(120)}")
                     if (response.isNotBlank() && response.startsWith("http")) {
@@ -166,7 +191,7 @@ class Bokep31Provider : MainAPI() {
                         Log.d("Bokep31", "extractDoodLike: videoUrl = ${videoUrl.take(120)}")
                         callback.invoke(
                             newExtractorLink(name, "DoodStream", videoUrl, ExtractorLinkType.VIDEO) {
-                                this.referer = url
+                                this.referer = fetchUrl
                                 this.quality = Qualities.Unknown.value
                             }
                         )
@@ -183,7 +208,7 @@ class Bokep31Provider : MainAPI() {
             if (m3u8Match != null) {
                 val videoUrl = m3u8Match.groupValues[1].replace("\\/", "/")
                 Log.d("Bokep31", "extractDoodLike: m3u8 fallback = ${videoUrl.take(120)}")
-                M3u8Helper.generateM3u8(name, videoUrl, url, headers = mapOf("Referer" to url)).forEach(callback)
+                M3u8Helper.generateM3u8(name, videoUrl, fetchUrl, headers = mapOf("Referer" to fetchUrl)).forEach(callback)
                 return
             }
 
@@ -193,7 +218,7 @@ class Bokep31Provider : MainAPI() {
                 Log.d("Bokep31", "extractDoodLike: mp4 fallback = ${videoUrl.take(120)}")
                 callback.invoke(
                     newExtractorLink(name, name, videoUrl, ExtractorLinkType.VIDEO) {
-                        this.referer = url
+                        this.referer = fetchUrl
                         this.quality = Qualities.Unknown.value
                     }
                 )
@@ -201,24 +226,57 @@ class Bokep31Provider : MainAPI() {
             }
 
             Log.d("Bokep31", "extractDoodLike: no direct m3u8/mp4, trying hash-based HLS construction")
-            val hashMatch = Regex(""""hash"\s*:\s*"([a-f0-9]{32})"""").find(pageHtml)
-            val fileId = url.substringAfterLast("/e/").substringBefore("?")
+            val hashMatch = Regex(""""hash"\s*:\s*"([a-f0-9]{32,})"""").find(pageHtml)
+            val fileId = fetchUrl.substringAfterLast("/d/").substringAfterLast("/e/").substringBefore("?")
             if (hashMatch != null && fileId.isNotEmpty()) {
-                val md5Hash = hashMatch.groupValues[1]
+                val hash = hashMatch.groupValues[1]
+                Log.d("Bokep31", "extractDoodLike: hash=$hash, fileId=$fileId")
+                val dirMatch = Regex("""/hls2/(\d{2})/(\d+)/""").find(decodedScript ?: pageHtml)
+                val dir1 = dirMatch?.groupValues?.get(1) ?: "03"
+                val dir2 = dirMatch?.groupValues?.get(2) ?: "00000"
+                val videoHash = "${fileId}_h"
                 val cdnDomains = listOf("hw6ugf3856NN.tnmr.org", "hw.jmnl.xyz", "hw.cdnst1.xyz")
                 for (cdn in cdnDomains) {
-                    val hlsUrl = "https://$cdn/hls2/$fileId/master.m3u8?pass=$md5Hash&token=28800&expiry=${System.currentTimeMillis()}"
+                    val hlsUrl = "https://$cdn/hls2/$dir1/$dir2/$videoHash/master.m3u8?e=28800&f=$fileId&i=0.3&sp=0"
                     Log.d("Bokep31", "extractDoodLike: trying HLS $hlsUrl")
                     try {
-                        M3u8Helper.generateM3u8(name, hlsUrl, url, headers = mapOf("Referer" to url)).forEach(callback)
+                        M3u8Helper.generateM3u8(name, hlsUrl, fetchUrl, headers = mapOf("Referer" to fetchUrl)).forEach(callback)
                         return
                     } catch (_: Exception) {}
                 }
             }
 
-            Log.w("Bokep31", "extractDoodLike: no video URL found in $url")
+            Log.w("Bokep31", "extractDoodLike: no video URL found in $fetchUrl")
         } catch (e: Exception) {
             Log.e("Bokep31", "extractDoodLike error: ${e.message}", e)
+        }
+    }
+
+    private fun decodePackerScript(html: String): String? {
+        try {
+            val packerRegex = Regex(
+                """eval\(function\(p,a,c,k,e,d\)\{[^}]*\}\('(.+?)',(\d+),(\d+),'([^']*?)'\.split\('\|'\)""",
+                RegexOption.DOT_MATCHES_ALL
+            )
+            val match = packerRegex.find(html) ?: return null
+            val p = match.groupValues[1]
+            val a = match.groupValues[2].toIntOrNull() ?: return null
+            val c = match.groupValues[3].toIntOrNull() ?: return null
+            val k = match.groupValues[4].split('|')
+            Log.d("Bokep31", "decodePackerScript: base=$a, count=$c, words=${k.size}")
+
+            var result = p
+            for (i in (c - 1) downTo 0) {
+                if (i < k.size && k[i].isNotEmpty()) {
+                    val index = i.toString(a)
+                    result = result.replace(Regex("\\b${Regex.escape(index)}\\b"), k[i])
+                }
+            }
+            Log.d("Bokep31", "decodePackerScript: decoded length=${result.length}")
+            return result
+        } catch (e: Exception) {
+            Log.e("Bokep31", "decodePackerScript error: ${e.message}", e)
+            return null
         }
     }
 
