@@ -100,7 +100,6 @@ class Bokep31Provider : MainAPI() {
 
         val iframes = mutableListOf<String>()
 
-        // Extract from data-lazy-src (WordPress Rocket) or src
         document.select("iframe").forEach { iframe ->
             val lazySrc = iframe.attr("data-lazy-src").takeIf { it.isNotBlank() && it != "about:blank" }
             val src = iframe.attr("src").takeIf { it.isNotBlank() && it != "about:blank" }
@@ -108,7 +107,6 @@ class Bokep31Provider : MainAPI() {
             if (url != null) iframes.add(fixUrl(url))
         }
 
-        // Fallback: meta[itemprop=embedURL]
         if (iframes.isEmpty()) {
             document.select("meta[itemprop=embedURL]").forEach { meta ->
                 val url = meta.attr("content").takeIf { it.isNotBlank() }
@@ -116,10 +114,12 @@ class Bokep31Provider : MainAPI() {
             }
         }
 
+        Log.d("Bokep31", "Found ${iframes.size} iframes: $iframes")
+
         iframes.distinct().map { iframeSrc ->
             async(Dispatchers.IO) {
                 try {
-                    if (iframeSrc.contains("playmogo") || iframeSrc.contains("pendek")) {
+                    if (iframeSrc.contains("playmogo") || iframeSrc.contains("pendek") || iframeSrc.contains("dood")) {
                         extractDoodLike(iframeSrc, data, callback)
                     } else {
                         loadExtractor(iframeSrc, data, subtitleCallback, callback)
@@ -139,25 +139,30 @@ class Bokep31Provider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
+            Log.d("Bokep31", "extractDoodLike: fetching $url")
             val document = app.get(url, referer = referer).document
             val scripts = document.select("script")
+            Log.d("Bokep31", "extractDoodLike: found ${scripts.size} scripts")
 
             for (script in scripts) {
                 val scriptContent = script.html()
-                val passMd5Match = Regex("""['"]\s*/pass_md5/([^'"]+)['"]""").find(scriptContent)
+                val passMd5Match = findPassMd5(scriptContent)
                 if (passMd5Match != null) {
-                    val passMd5Path = passMd5Match.groupValues[1]
-                    val baseUrl = url.substringBefore("/e/")
+                    val passMd5Path = passMd5Match
+                    Log.d("Bokep31", "extractDoodLike: pass_md5 path = $passMd5Path")
+                    val baseUrl = url.substringBefore("/e/").substringBefore("/d/")
                     val passMd5Url = "$baseUrl/pass_md5/$passMd5Path"
+                    Log.d("Bokep31", "extractDoodLike: fetching $passMd5Url")
                     val response = app.get(
                         passMd5Url,
                         headers = mapOf("Referer" to url, "X-Requested-With" to "XMLHttpRequest")
                     ).text
+                    Log.d("Bokep31", "extractDoodLike: pass_md5 response = ${response.take(120)}")
                     if (response.isNotBlank() && response.startsWith("http")) {
                         val randomSuffix = (1..10).map { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".random() }.joinToString("")
-                        val tokenMatch = Regex("""token=([^&'"]+)""").find(scriptContent)
-                        val token = tokenMatch?.groupValues?.get(1) ?: ""
+                        val token = passMd5Path.substringAfterLast("/")
                         val videoUrl = "$response$randomSuffix?token=$token&expiry=${System.currentTimeMillis()}"
+                        Log.d("Bokep31", "extractDoodLike: videoUrl = ${videoUrl.take(120)}")
                         callback.invoke(
                             newExtractorLink(name, "DoodStream", videoUrl, ExtractorLinkType.VIDEO) {
                                 this.referer = url
@@ -165,25 +170,48 @@ class Bokep31Provider : MainAPI() {
                             }
                         )
                         return
+                    } else {
+                        Log.w("Bokep31", "extractDoodLike: pass_md5 response empty or not http")
                     }
                 }
             }
 
-            // Fallback: try to find direct mp4 in page
+            Log.d("Bokep31", "extractDoodLike: no pass_md5 found, trying mp4 fallback")
             val pageHtml = document.html()
             val mp4Match = Regex(""""(https?://[^"]+\.mp4[^"]*)"""").find(pageHtml)
             if (mp4Match != null) {
                 val videoUrl = mp4Match.groupValues[1].replace("\\/", "/")
+                Log.d("Bokep31", "extractDoodLike: mp4 fallback = ${videoUrl.take(120)}")
                 callback.invoke(
                     newExtractorLink(name, name, videoUrl, ExtractorLinkType.VIDEO) {
                         this.referer = url
                         this.quality = Qualities.Unknown.value
                     }
                 )
+            } else {
+                Log.w("Bokep31", "extractDoodLike: no video URL found in $url")
             }
         } catch (e: Exception) {
-            Log.e("Bokep31", "Error in extractDoodLike: ${e.message}")
+            Log.e("Bokep31", "extractDoodLike error: ${e.message}", e)
         }
+    }
+
+    private fun findPassMd5(scriptContent: String): String? {
+        val patterns = listOf(
+            Regex("""['"]\s*/pass_md5/([^'"]+)['"]"""),
+            Regex("""/pass_md5/([a-zA-Z0-9\-]+/[a-zA-Z0-9]+)"""),
+            Regex("""pass_md5['"]\s*:\s*['"]([^'"]+)['"]"""),
+            Regex("""['"](/pass_md5/[^'"]+)['"]"""),
+        )
+        for (pattern in patterns) {
+            val match = pattern.find(scriptContent)
+            if (match != null) {
+                val path = match.groupValues[1].removePrefix("/")
+                Log.d("Bokep31", "findPassMd5: matched pattern, path = $path")
+                return path
+            }
+        }
+        return null
     }
 
     private fun parseDurationISO(duration: String?): Int? {
