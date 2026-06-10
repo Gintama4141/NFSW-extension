@@ -119,7 +119,7 @@ class Bokep31Provider : MainAPI() {
         iframes.distinct().map { iframeSrc ->
             async(Dispatchers.IO) {
                 try {
-                    if (iframeSrc.contains("playmogo") || iframeSrc.contains("pendek") || iframeSrc.contains("dood")) {
+                    if (iframeSrc.contains("playmogo") || iframeSrc.contains("pendek") || iframeSrc.contains("dood") || iframeSrc.contains("luluvdo") || iframeSrc.contains("lulustream")) {
                         extractDoodLike(iframeSrc, data, callback)
                     } else {
                         loadExtractor(iframeSrc, data, subtitleCallback, callback)
@@ -143,12 +143,13 @@ class Bokep31Provider : MainAPI() {
             val document = app.get(url, referer = referer).document
             val scripts = document.select("script")
             Log.d("Bokep31", "extractDoodLike: found ${scripts.size} scripts")
+            val pageHtml = document.html()
 
             for (script in scripts) {
                 val scriptContent = script.html()
-                val passMd5Match = findPassMd5(scriptContent)
-                if (passMd5Match != null) {
-                    val passMd5Path = passMd5Match
+
+                val passMd5Path = findPassMd5(scriptContent)
+                if (passMd5Path != null) {
                     Log.d("Bokep31", "extractDoodLike: pass_md5 path = $passMd5Path")
                     val baseUrl = url.substringBefore("/e/").substringBefore("/d/")
                     val passMd5Url = "$baseUrl/pass_md5/$passMd5Path"
@@ -176,9 +177,17 @@ class Bokep31Provider : MainAPI() {
                 }
             }
 
-            Log.d("Bokep31", "extractDoodLike: no pass_md5 found, trying mp4 fallback")
-            val pageHtml = document.html()
-            val mp4Match = Regex(""""(https?://[^"]+\.mp4[^"]*)"""").find(pageHtml)
+            Log.d("Bokep31", "extractDoodLike: no pass_md5 found, trying m3u8/mp4 fallback")
+
+            val m3u8Match = Regex("""(https?://[^"'\s]+\.m3u8[^"'\s]*)""").find(pageHtml)
+            if (m3u8Match != null) {
+                val videoUrl = m3u8Match.groupValues[1].replace("\\/", "/")
+                Log.d("Bokep31", "extractDoodLike: m3u8 fallback = ${videoUrl.take(120)}")
+                M3u8Helper.generateM3u8(name, videoUrl, url, headers = mapOf("Referer" to url)).forEach(callback)
+                return
+            }
+
+            val mp4Match = Regex("""(https?://[^"'\s]+\.mp4[^"'\s]*)""").find(pageHtml)
             if (mp4Match != null) {
                 val videoUrl = mp4Match.groupValues[1].replace("\\/", "/")
                 Log.d("Bokep31", "extractDoodLike: mp4 fallback = ${videoUrl.take(120)}")
@@ -188,9 +197,26 @@ class Bokep31Provider : MainAPI() {
                         this.quality = Qualities.Unknown.value
                     }
                 )
-            } else {
-                Log.w("Bokep31", "extractDoodLike: no video URL found in $url")
+                return
             }
+
+            Log.d("Bokep31", "extractDoodLike: no direct m3u8/mp4, trying hash-based HLS construction")
+            val hashMatch = Regex(""""hash"\s*:\s*"([a-f0-9]{32})"""").find(pageHtml)
+            val fileId = url.substringAfterLast("/e/").substringBefore("?")
+            if (hashMatch != null && fileId.isNotEmpty()) {
+                val md5Hash = hashMatch.groupValues[1]
+                val cdnDomains = listOf("hw6ugf3856NN.tnmr.org", "hw.jmnl.xyz", "hw.cdnst1.xyz")
+                for (cdn in cdnDomains) {
+                    val hlsUrl = "https://$cdn/hls2/$fileId/master.m3u8?pass=$md5Hash&token=28800&expiry=${System.currentTimeMillis()}"
+                    Log.d("Bokep31", "extractDoodLike: trying HLS $hlsUrl")
+                    try {
+                        M3u8Helper.generateM3u8(name, hlsUrl, url, headers = mapOf("Referer" to url)).forEach(callback)
+                        return
+                    } catch (_: Exception) {}
+                }
+            }
+
+            Log.w("Bokep31", "extractDoodLike: no video URL found in $url")
         } catch (e: Exception) {
             Log.e("Bokep31", "extractDoodLike error: ${e.message}", e)
         }
