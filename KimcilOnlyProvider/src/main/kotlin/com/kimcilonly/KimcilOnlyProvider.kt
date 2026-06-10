@@ -1,6 +1,7 @@
 package com.kimcilonly
 
 import android.util.Base64
+import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -26,6 +27,7 @@ class KimcilOnlyProvider : MainAPI() {
     override val supportedTypes = setOf(TvType.NSFW)
 
     private val byseExtractor by lazy { ByseSXLocal() }
+    private val guploadExtractor by lazy { GUploadExtractor() }
 
     override val mainPage = mainPageOf(
         "$mainUrl/category/live-apk/" to "Viral",
@@ -109,12 +111,17 @@ class KimcilOnlyProvider : MainAPI() {
                         fullUrl.contains("pecah") -> {
                             extractPecahLike(fullUrl, data, subtitleCallback, callback)
                         }
+                        fullUrl.contains("gupload") -> {
+                            guploadExtractor.getUrl(fullUrl, data, subtitleCallback, callback)
+                        }
                         else -> {
                             loadExtractor(fullUrl, data, subtitleCallback, callback)
                             extractGeneric(fullUrl, data, callback)
                         }
                     }
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    android.util.Log.e("KimcilOnly", "Error in loadLinks: \${e.message}")
+                }
             })
         }
 
@@ -142,7 +149,9 @@ class KimcilOnlyProvider : MainAPI() {
             ).parsedSafe<VidaraStreamResponse>() ?: return
             val streamUrl = response.streaming_url ?: return
             M3u8Helper.generateM3u8(name, streamUrl, baseUrl, headers = mapOf("Referer" to baseUrl)).forEach(callback)
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.e("KimcilOnly", "Error in extractVidaraLike: \${e.message}")
+        }
     }
 
     private suspend fun extractPecahLike(
@@ -167,7 +176,9 @@ class KimcilOnlyProvider : MainAPI() {
                 link.contains("playmogo") || link.contains("pendek") -> extractDoodLike(link, referer, callback)
                 else -> { loadExtractor(link, referer, subtitleCallback, callback); extractGeneric(link, referer, callback) }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.e("KimcilOnly", "Error in extractPecahLike: \${e.message}")
+        }
     }
 
     private suspend fun extractGeneric(
@@ -187,7 +198,9 @@ class KimcilOnlyProvider : MainAPI() {
                     }
                 )
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.e("KimcilOnly", "Error in extractGeneric: \${e.message}")
+        }
     }
 
     private suspend fun extractDoodLike(
@@ -260,8 +273,92 @@ class KimcilOnlyProvider : MainAPI() {
                     }
                 )
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.e("KimcilOnly", "Error in extractDoodLike: \${e.message}")
+        }
     }
+}
+
+open class GUploadExtractor : ExtractorApi() {
+    override var name = "GUpload"
+    override var mainUrl = "https://gupload.xyz"
+    override val requiresReferer = true
+
+    private fun b64UrlDecode(s: String): ByteArray {
+        return try {
+            val fixed = s.replace('-', '+').replace('_', '/')
+            val pad = when (fixed.length % 4) {
+                2 -> "=="
+                3 -> "="
+                else -> ""
+            }
+            Base64.decode(fixed + pad, Base64.DEFAULT)
+        } catch (_: Exception) { ByteArray(0) }
+    }
+
+    private fun xorDecode(data: String, key: String): String {
+        val result = StringBuilder()
+        for (i in data.indices) {
+            val dataChar = data[i].toInt()
+            val keyChar = key[i % key.length].toInt()
+            result.append((dataChar ^ keyChar).toChar())
+        }
+        return result.toString()
+    }
+
+    override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
+        try {
+            val baseUrl = getBaseUrl(url)
+            val pathParts = url.removePrefix(baseUrl).removePrefix("/").split("/")
+            if (pathParts.size < 2) return
+            val code = pathParts[1]
+
+            val embedUrl = "$baseUrl/data/e/$code/embed"
+            val document = app.get(embedUrl, referer = url).document
+
+            val script = document.selectFirst("script")?.html()
+            if (script == null) return
+
+            val pattern = Regex("c50b1777~[A-Za-z0-9+/=]+")
+            val match = pattern.find(script)
+            if (match == null) return
+
+            val obfuscated = match.value.removePrefix("c50b1777~")
+            val decoded = xorDecode(obfuscated, "G7#kP!2qZxV9mRwL")
+            val playerUrl = b64UrlDecode(decoded).decodeToString(Charsets.UTF_8)
+
+            val playerDocument = app.get(playerUrl).document
+            val playerScript = playerDocument.html()
+
+            val m3u8Pattern = Regex("""https?://[^\"'\s]+\.(m3u8|mp4)[^\"'\s]*""")
+            val matches = m3u8Pattern.findAll(playerScript)
+
+            matches.forEach { match ->
+                val videoUrl = match.value.replace("\\/", "/")
+                if (videoUrl.contains(".m3u8")) {
+                    M3u8Helper.generateM3u8(name, videoUrl, baseUrl).forEach(callback)
+                } else {
+                    callback.invoke(newExtractorLink(name, "GUpload", videoUrl, ExtractorLinkType.VIDEO) {
+                        this.referer = url
+                        this.quality = Qualities.Unknown.value
+                    })
+                }
+            }
+
+            if (!matches.iterator().hasNext()) {
+                val thumbnailUrl = Regex("https?://[^\"'\s]+https://gupload.xyz/data/e/hls/[^\"'\s]*/thumb/[^\"'\s]+\\.jpg").find(document.html())?.value
+                if (thumbnailUrl != null) {
+                    val hlsUrl = thumbnailUrl.replace("/thumb/", "/master.m3u8")
+                    M3u8Helper.generateM3u8(name, hlsUrl, baseUrl).forEach(callback)
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("GUploadExtractor", "Error getting URL: \${e.message}")
+        }
+    }
+
+    private fun getBaseUrl(url: String): String =
+        runCatching { URI(url).let { "${it.scheme}://${it.host}" } }.getOrDefault(url)
 }
 
 open class ByseSXLocal : ExtractorApi() {
