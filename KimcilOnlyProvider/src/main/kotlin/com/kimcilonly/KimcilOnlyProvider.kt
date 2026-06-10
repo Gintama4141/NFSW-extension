@@ -482,6 +482,7 @@ open class GUploadExtractor : ExtractorApi() {
             Log.d("GUploadExtractor", "fetchAndExtractPlayer: player preview=${playerHtml.take(500)}")
         }
     }
+}
 
 open class ByseSXLocal : ExtractorApi() {
     override var name = "Byse"
