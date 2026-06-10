@@ -299,9 +299,9 @@ open class GUploadExtractor : ExtractorApi() {
     private fun xorDecode(data: String, key: String): String {
         val result = StringBuilder()
         for (i in data.indices) {
-            val dataChar = data[i].toInt()
-            val keyChar = key[i % key.length].toInt()
-            result.append((dataChar ^ keyChar).toChar())
+            val d = data[i].code
+            val k = key[i % key.length].code
+            result.append((d xor k).toChar())
         }
         return result.toString()
     }
@@ -325,12 +325,12 @@ open class GUploadExtractor : ExtractorApi() {
 
             val obfuscated = match.value.removePrefix("c50b1777~")
             val decoded = xorDecode(obfuscated, "G7#kP!2qZxV9mRwL")
-            val playerUrl = b64UrlDecode(decoded).decodeToString(Charsets.UTF_8)
+            val playerUrl = String(b64UrlDecode(decoded))
 
             val playerDocument = app.get(playerUrl).document
             val playerScript = playerDocument.html()
 
-            val m3u8Pattern = Regex("""https?://[^\"'\s]+\.(m3u8|mp4)[^\"'\s]*""")
+            val m3u8Pattern = Regex("""https?://[^"'\s]+\.(m3u8|mp4)[^"'\s]*""")
             val matches = m3u8Pattern.findAll(playerScript)
 
             matches.forEach { match ->
@@ -346,7 +346,7 @@ open class GUploadExtractor : ExtractorApi() {
             }
 
             if (!matches.iterator().hasNext()) {
-                val thumbnailUrl = Regex("https?://[^\"'\s]+https://gupload.xyz/data/e/hls/[^\"'\s]*/thumb/[^\"'\s]+\\.jpg").find(document.html())?.value
+                val thumbnailUrl = Regex("""https?://[^"'\s]+https://gupload\.xyz/data/e/hls/[^"'\s]*/thumb/[^"'\s]+\.jpg""").find(document.html())?.value
                 if (thumbnailUrl != null) {
                     val hlsUrl = thumbnailUrl.replace("/thumb/", "/master.m3u8")
                     M3u8Helper.generateM3u8(name, hlsUrl, baseUrl).forEach(callback)
