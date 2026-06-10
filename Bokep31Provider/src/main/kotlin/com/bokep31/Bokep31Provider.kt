@@ -1,5 +1,6 @@
 package com.bokep31
 
+import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.Dispatchers
@@ -97,20 +98,92 @@ class Bokep31Provider : MainAPI() {
     ): Boolean = coroutineScope {
         val document = app.get(data).document
 
-        // Get all iframes from the page
-        val iframes = document.select("iframe[src], .responsive-player iframe, .video-player iframe").mapNotNull {
-            it.attr("src").takeIf { src -> src.isNotBlank() }?.let { src -> fixUrl(src) }
-        }.distinct()
+        val iframes = mutableListOf<String>()
 
-        iframes.map { iframeSrc ->
+        // Extract from data-lazy-src (WordPress Rocket) or src
+        document.select("iframe").forEach { iframe ->
+            val lazySrc = iframe.attr("data-lazy-src").takeIf { it.isNotBlank() && it != "about:blank" }
+            val src = iframe.attr("src").takeIf { it.isNotBlank() && it != "about:blank" }
+            val url = lazySrc ?: src
+            if (url != null) iframes.add(fixUrl(url))
+        }
+
+        // Fallback: meta[itemprop=embedURL]
+        if (iframes.isEmpty()) {
+            document.select("meta[itemprop=embedURL]").forEach { meta ->
+                val url = meta.attr("content").takeIf { it.isNotBlank() }
+                if (url != null) iframes.add(fixUrl(url))
+            }
+        }
+
+        iframes.distinct().map { iframeSrc ->
             async(Dispatchers.IO) {
                 try {
-                    loadExtractor(iframeSrc, data, subtitleCallback, callback)
-                } catch (_: Exception) {}
+                    if (iframeSrc.contains("playmogo") || iframeSrc.contains("pendek")) {
+                        extractDoodLike(iframeSrc, data, callback)
+                    } else {
+                        loadExtractor(iframeSrc, data, subtitleCallback, callback)
+                    }
+                } catch (e: Exception) {
+                    Log.e("Bokep31", "Error extracting $iframeSrc: ${e.message}")
+                }
             }
         }.awaitAll()
 
         return@coroutineScope true
+    }
+
+    private suspend fun extractDoodLike(
+        url: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            val document = app.get(url, referer = referer).document
+            val scripts = document.select("script")
+
+            for (script in scripts) {
+                val scriptContent = script.html()
+                val passMd5Match = Regex("""['"]\s*/pass_md5/([^'"]+)['"]""").find(scriptContent)
+                if (passMd5Match != null) {
+                    val passMd5Path = passMd5Match.groupValues[1]
+                    val baseUrl = url.substringBefore("/e/")
+                    val passMd5Url = "$baseUrl/pass_md5/$passMd5Path"
+                    val response = app.get(
+                        passMd5Url,
+                        headers = mapOf("Referer" to url, "X-Requested-With" to "XMLHttpRequest")
+                    ).text
+                    if (response.isNotBlank() && response.startsWith("http")) {
+                        val randomSuffix = (1..10).map { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".random() }.joinToString("")
+                        val tokenMatch = Regex("""token=([^&'"]+)""").find(scriptContent)
+                        val token = tokenMatch?.groupValues?.get(1) ?: ""
+                        val videoUrl = "$response$randomSuffix?token=$token&expiry=${System.currentTimeMillis()}"
+                        callback.invoke(
+                            newExtractorLink(name, "DoodStream", videoUrl, ExtractorLinkType.VIDEO) {
+                                this.referer = url
+                                this.quality = Qualities.Unknown.value
+                            }
+                        )
+                        return
+                    }
+                }
+            }
+
+            // Fallback: try to find direct mp4 in page
+            val pageHtml = document.html()
+            val mp4Match = Regex(""""(https?://[^"]+\.mp4[^"]*)"""").find(pageHtml)
+            if (mp4Match != null) {
+                val videoUrl = mp4Match.groupValues[1].replace("\\/", "/")
+                callback.invoke(
+                    newExtractorLink(name, name, videoUrl, ExtractorLinkType.VIDEO) {
+                        this.referer = url
+                        this.quality = Qualities.Unknown.value
+                    }
+                )
+            }
+        } catch (e: Exception) {
+            Log.e("Bokep31", "Error in extractDoodLike: ${e.message}")
+        }
     }
 
     private fun parseDurationISO(duration: String?): Int? {
