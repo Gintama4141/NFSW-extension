@@ -85,18 +85,25 @@ class KimcilOnlyProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
+        Log.d("KimcilOnly", "loadLinks: data=$data")
         val allJobs = mutableListOf<kotlinx.coroutines.Deferred<Any>>()
         val playerUrls = listOf(data, "$data?player=2", "$data?player=3", "$data?player=4")
 
         playerUrls.forEach { playerUrl ->
             allJobs.add(async(Dispatchers.IO) {
                 try {
+                    Log.d("KimcilOnly", "loadLinks: fetching $playerUrl")
                     val document = app.get(playerUrl, referer = data).document
-                    val iframeSrc = document.select("iframe[src]").mapNotNull {
-                        it.attr("src").takeIf { src -> src.isNotBlank() }
-                    }.firstOrNull() ?: return@async
+
+                    val iframeSrc = extractIframeUrl(document)
+                    if (iframeSrc == null) {
+                        Log.w("KimcilOnly", "loadLinks: no iframe found in $playerUrl")
+                        return@async
+                    }
+                    Log.d("KimcilOnly", "loadLinks: found iframe $iframeSrc")
 
                     val fullUrl = fixUrl(iframeSrc)
+                    Log.d("KimcilOnly", "loadLinks: routing to extractor for $fullUrl")
                     when {
                         fullUrl.contains("byse") -> {
                             byseExtractor.getUrl(fullUrl, data, subtitleCallback, callback)
@@ -120,13 +127,30 @@ class KimcilOnlyProvider : MainAPI() {
                         }
                     }
                 } catch (e: Exception) {
-                    android.util.Log.e("KimcilOnly", "Error in loadLinks: \${e.message}")
+                    Log.e("KimcilOnly", "loadLinks error: ${e.message}", e)
                 }
             })
         }
 
         allJobs.awaitAll()
+        Log.d("KimcilOnly", "loadLinks: all jobs completed")
         return@coroutineScope true
+    }
+
+    private fun extractIframeUrl(document: org.jsoup.nodes.Document): String? {
+        document.select("iframe").forEach { iframe ->
+            val src = iframe.attr("src").takeIf { it.isNotBlank() && it != "about:blank" }
+            if (src != null) return src
+            val lazySrc = iframe.attr("data-lazy-src").takeIf { it.isNotBlank() && it != "about:blank" }
+            if (lazySrc != null) return lazySrc
+            val dataSrc = iframe.attr("data-src").takeIf { it.isNotBlank() && it != "about:blank" }
+            if (dataSrc != null) return dataSrc
+        }
+        document.select("meta[itemprop=embedURL]").forEach { meta ->
+            val url = meta.attr("content").takeIf { it.isNotBlank() }
+            if (url != null) return url
+        }
+        return null
     }
 
     private suspend fun extractVidaraLike(
@@ -150,7 +174,7 @@ class KimcilOnlyProvider : MainAPI() {
             val streamUrl = response.streaming_url ?: return
             M3u8Helper.generateM3u8(name, streamUrl, baseUrl, headers = mapOf("Referer" to baseUrl)).forEach(callback)
         } catch (e: Exception) {
-            android.util.Log.e("KimcilOnly", "Error in extractVidaraLike: \${e.message}")
+            Log.e("KimcilOnly", "extractVidaraLike error: ${e.message}", e)
         }
     }
 
@@ -177,7 +201,7 @@ class KimcilOnlyProvider : MainAPI() {
                 else -> { loadExtractor(link, referer, subtitleCallback, callback); extractGeneric(link, referer, callback) }
             }
         } catch (e: Exception) {
-            android.util.Log.e("KimcilOnly", "Error in extractPecahLike: \${e.message}")
+            Log.e("KimcilOnly", "extractPecahLike error: ${e.message}", e)
         }
     }
 
@@ -199,7 +223,7 @@ class KimcilOnlyProvider : MainAPI() {
                 )
             }
         } catch (e: Exception) {
-            android.util.Log.e("KimcilOnly", "Error in extractGeneric: \${e.message}")
+            Log.e("KimcilOnly", "extractGeneric error: ${e.message}", e)
         }
     }
 
@@ -209,25 +233,29 @@ class KimcilOnlyProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ) {
         try {
+            Log.d("KimcilOnly", "extractDoodLike: fetching $url")
             val document = app.get(url, referer = referer).document
             val scripts = document.select("script")
+            Log.d("KimcilOnly", "extractDoodLike: found ${scripts.size} scripts")
 
             for (script in scripts) {
                 val scriptContent = script.html()
-                val passMd5Match = Regex("""['"]\s*/pass_md5/([^'"]+)['"]""").find(scriptContent)
-                if (passMd5Match != null) {
-                    val passMd5Path = passMd5Match.groupValues[1]
-                    val baseUrl = url.substringBefore("/e/")
+                val passMd5Path = findPassMd5(scriptContent)
+                if (passMd5Path != null) {
+                    Log.d("KimcilOnly", "extractDoodLike: pass_md5 path = $passMd5Path")
+                    val baseUrl = url.substringBefore("/e/").substringBefore("/d/")
                     val passMd5Url = "$baseUrl/pass_md5/$passMd5Path"
+                    Log.d("KimcilOnly", "extractDoodLike: fetching $passMd5Url")
                     val response = app.get(
                         passMd5Url,
                         headers = mapOf("Referer" to url, "X-Requested-With" to "XMLHttpRequest")
                     ).text
+                    Log.d("KimcilOnly", "extractDoodLike: pass_md5 response = ${response.take(120)}")
                     if (response.isNotBlank() && response.startsWith("http")) {
                         val randomSuffix = (1..10).map { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".random() }.joinToString("")
-                        val tokenMatch = Regex("""token=([^&'"]+)""").find(scriptContent)
-                        val token = tokenMatch?.groupValues?.get(1) ?: ""
+                        val token = passMd5Path.substringAfterLast("/")
                         val videoUrl = "$response$randomSuffix?token=$token&expiry=${System.currentTimeMillis()}"
+                        Log.d("KimcilOnly", "extractDoodLike: videoUrl = ${videoUrl.take(120)}")
                         callback.invoke(
                             newExtractorLink(name, "DoodStream", videoUrl, ExtractorLinkType.VIDEO) {
                                 this.referer = url
@@ -235,6 +263,8 @@ class KimcilOnlyProvider : MainAPI() {
                             }
                         )
                         return
+                    } else {
+                        Log.w("KimcilOnly", "extractDoodLike: pass_md5 response empty or not http")
                     }
                 }
 
@@ -262,6 +292,7 @@ class KimcilOnlyProvider : MainAPI() {
                 }
             }
 
+            Log.d("KimcilOnly", "extractDoodLike: no pass_md5 found, trying mp4 fallback")
             val pageHtml = document.html()
             val mp4Match = Regex(""""(https?://[^"]+\.mp4[^"]*)"""").find(pageHtml)
             if (mp4Match != null) {
@@ -272,10 +303,30 @@ class KimcilOnlyProvider : MainAPI() {
                         this.quality = Qualities.Unknown.value
                     }
                 )
+            } else {
+                Log.w("KimcilOnly", "extractDoodLike: no video URL found in $url")
             }
         } catch (e: Exception) {
-            android.util.Log.e("KimcilOnly", "Error in extractDoodLike: \${e.message}")
+            Log.e("KimcilOnly", "extractDoodLike error: ${e.message}", e)
         }
+    }
+
+    private fun findPassMd5(scriptContent: String): String? {
+        val patterns = listOf(
+            Regex("""['"]\s*/pass_md5/([^'"]+)['"]"""),
+            Regex("""/pass_md5/([a-zA-Z0-9\-]+/[a-zA-Z0-9]+)"""),
+            Regex("""pass_md5['"]\s*:\s*['"]([^'"]+)['"]"""),
+            Regex("""['"](/pass_md5/[^'"]+)['"]"""),
+        )
+        for (pattern in patterns) {
+            val match = pattern.find(scriptContent)
+            if (match != null) {
+                val path = match.groupValues[1].removePrefix("/")
+                Log.d("KimcilOnly", "findPassMd5: matched pattern, path = $path")
+                return path
+            }
+        }
+        return null
     }
 }
 
@@ -308,36 +359,56 @@ open class GUploadExtractor : ExtractorApi() {
 
     override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
         try {
+            Log.d("GUploadExtractor", "getUrl: url=$url")
             val baseUrl = getBaseUrl(url)
             val pathParts = url.removePrefix(baseUrl).removePrefix("/").split("/")
-            if (pathParts.size < 2) return
+            Log.d("GUploadExtractor", "getUrl: pathParts=$pathParts")
+            if (pathParts.size < 2) {
+                Log.w("GUploadExtractor", "getUrl: pathParts too short, returning")
+                return
+            }
             val code = pathParts.last()
+            Log.d("GUploadExtractor", "getUrl: code=$code")
 
             val embedUrl = "$baseUrl/data/e/$code/embed"
+            Log.d("GUploadExtractor", "getUrl: fetching embed $embedUrl")
             val document = app.get(embedUrl, referer = url).document
 
             val script = document.selectFirst("script")?.html()
-            if (script == null) return
+            if (script == null) {
+                Log.w("GUploadExtractor", "getUrl: no script found in embed page")
+                return
+            }
+            Log.d("GUploadExtractor", "getUrl: script length=${script.length}")
 
             val pattern = Regex("c50b1777~[A-Za-z0-9+/=]+")
             val match = pattern.find(script)
-            if (match == null) return
+            if (match == null) {
+                Log.w("GUploadExtractor", "getUrl: c50b1777~ pattern not found in script")
+                Log.d("GUploadExtractor", "getUrl: script preview=${script.take(300)}")
+                return
+            }
+            Log.d("GUploadExtractor", "getUrl: found obfuscated data")
 
             val obfuscated = match.value.removePrefix("c50b1777~")
             val decoded = xorDecode(obfuscated, "G7#kP!2qZxV9mRwL")
             val playerUrl = String(b64UrlDecode(decoded))
+            Log.d("GUploadExtractor", "getUrl: playerUrl=$playerUrl")
 
             val playerDocument = app.get(playerUrl).document
             val playerScript = playerDocument.html()
 
             val m3u8Pattern = Regex("""https?://[^"'\s]+\.(m3u8|mp4)[^"'\s]*""")
-            val matches = m3u8Pattern.findAll(playerScript)
+            val matches = m3u8Pattern.findAll(playerScript).toList()
+            Log.d("GUploadExtractor", "getUrl: found ${matches.size} m3u8/mp4 matches in player page")
 
             matches.forEach { match ->
                 val videoUrl = match.value.replace("\\/", "/")
                 if (videoUrl.contains(".m3u8")) {
+                    Log.d("GUploadExtractor", "getUrl: m3u8=$videoUrl")
                     M3u8Helper.generateM3u8(name, videoUrl, baseUrl).forEach(callback)
                 } else {
+                    Log.d("GUploadExtractor", "getUrl: mp4=$videoUrl")
                     callback.invoke(newExtractorLink(name, "GUpload", videoUrl, ExtractorLinkType.VIDEO) {
                         this.referer = url
                         this.quality = Qualities.Unknown.value
@@ -345,15 +416,19 @@ open class GUploadExtractor : ExtractorApi() {
                 }
             }
 
-            if (!matches.iterator().hasNext()) {
+            if (matches.isEmpty()) {
+                Log.d("GUploadExtractor", "getUrl: no m3u8/mp4 in player, trying hls fallback")
                 val thumbnailUrl = Regex("""https?://[^"'\s]+https://gupload\.xyz/data/e/hls/[^"'\s]*/thumb/[^"'\s]+\.jpg""").find(document.html())?.value
                 if (thumbnailUrl != null) {
                     val hlsUrl = thumbnailUrl.replace("/thumb/", "/master.m3u8")
+                    Log.d("GUploadExtractor", "getUrl: hls fallback=$hlsUrl")
                     M3u8Helper.generateM3u8(name, hlsUrl, baseUrl).forEach(callback)
+                } else {
+                    Log.w("GUploadExtractor", "getUrl: no video URLs found at all")
                 }
             }
         } catch (e: Exception) {
-            android.util.Log.e("GUploadExtractor", "Error getting URL: \${e.message}")
+            Log.e("GUploadExtractor", "getUrl error: ${e.message}", e)
         }
     }
 
