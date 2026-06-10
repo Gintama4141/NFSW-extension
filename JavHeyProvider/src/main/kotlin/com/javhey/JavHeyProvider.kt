@@ -252,36 +252,64 @@ open class GUploadExtractor : ExtractorApi() {
 
     override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
         try {
+            android.util.Log.d("GUploadExtractor", "getUrl: url=$url")
             val baseUrl = getBaseUrl(url)
             val pathParts = url.removePrefix(baseUrl).removePrefix("/").split("/")
-            if (pathParts.size < 2) return
+            android.util.Log.d("GUploadExtractor", "getUrl: pathParts=$pathParts")
+            if (pathParts.size < 2) {
+                android.util.Log.w("GUploadExtractor", "getUrl: pathParts too short, returning")
+                return
+            }
             val code = pathParts.last()
+            android.util.Log.d("GUploadExtractor", "getUrl: code=$code")
 
-            val embedUrl = "$baseUrl/data/e/$code/embed"
+            val embedUrl = "$baseUrl/data/e/$code"
+            android.util.Log.d("GUploadExtractor", "getUrl: fetching embed $embedUrl")
             val document = app.get(embedUrl, referer = url).document
 
-            val script = document.selectFirst("script")?.html()
-            if (script == null) return
+            val fullHtml = document.html()
+            android.util.Log.d("GUploadExtractor", "getUrl: page html length=${fullHtml.length}")
+            android.util.Log.d("GUploadExtractor", "getUrl: html preview=${fullHtml.take(500)}")
 
-            val pattern = Regex("c50b1777~[A-Za-z0-9+/=]+")
-            val match = pattern.find(script)
-            if (match == null) return
+            val oldPattern = Regex("c50b1777~[A-Za-z0-9+/=]+")
+            val oldMatch = oldPattern.find(fullHtml)
 
-            val obfuscated = match.value.removePrefix("c50b1777~")
-            val decoded = xorDecode(obfuscated, "G7#kP!2qZxV9mRwL")
-            val playerUrl = String(b64UrlDecode(decoded))
+            val dpPattern = Regex("""_dp\(['"]([A-Za-z0-9+/=~]+)['"]""")
+            val dpMatches = dpPattern.findAll(fullHtml).toList()
 
-            val playerDocument = app.get(playerUrl).document
-            val playerScript = playerDocument.html()
+            android.util.Log.d("GUploadExtractor", "getUrl: old pattern found=${oldMatch != null}, dp patterns found=${dpMatches.size}")
 
-            val m3u8Pattern = Regex("""https?://[^"'\s]+\.(m3u8|mp4)[^"'\s]*""")
-            val matches = m3u8Pattern.findAll(playerScript)
+            if (oldMatch != null) {
+                val obfuscated = oldMatch.value.removePrefix("c50b1777~")
+                val decoded = xorDecode(obfuscated, "G7#kP!2qZxV9mRwL")
+                val playerUrl = String(b64UrlDecode(decoded))
+                android.util.Log.d("GUploadExtractor", "getUrl: [old] playerUrl=$playerUrl")
+                fetchAndExtractPlayer(playerUrl, url, baseUrl, callback)
+            } else if (dpMatches.isNotEmpty()) {
+                for (dpMatch in dpMatches) {
+                    val obfuscated = dpMatch.groupValues[1]
+                    val decoded = xorDecode(obfuscated, "G7#kP!2qZxV9mRwL")
+                    val decodedStr = String(b64UrlDecode(decoded))
+                    android.util.Log.d("GUploadExtractor", "getUrl: [dp] decoded=$decodedStr")
+                    if (decodedStr.startsWith("http")) {
+                        android.util.Log.d("GUploadExtractor", "getUrl: [dp] found valid URL: $decodedStr")
+                        fetchAndExtractPlayer(decodedStr, url, baseUrl, callback)
+                        return
+                    }
+                }
+            }
 
-            matches.forEach { match ->
-                val videoUrl = match.value.replace("\\/", "/")
+            val pageUrlPatterns = Regex("""https?://[^"'\s]+\.(m3u8|mp4)[^"'\s]*""")
+            val pageMatches = pageUrlPatterns.findAll(fullHtml).toList()
+            android.util.Log.d("GUploadExtractor", "getUrl: found ${pageMatches.size} direct m3u8/mp4 matches in page")
+
+            for (m in pageMatches) {
+                val videoUrl = m.value.replace("\\/", "/")
                 if (videoUrl.contains(".m3u8")) {
+                    android.util.Log.d("GUploadExtractor", "getUrl: [page] m3u8=$videoUrl")
                     M3u8Helper.generateM3u8(name, videoUrl, baseUrl).forEach(callback)
                 } else {
+                    android.util.Log.d("GUploadExtractor", "getUrl: [page] mp4=$videoUrl")
                     callback.invoke(newExtractorLink(name, "GUpload", videoUrl, ExtractorLinkType.VIDEO) {
                         this.referer = url
                         this.quality = Qualities.Unknown.value
@@ -289,15 +317,55 @@ open class GUploadExtractor : ExtractorApi() {
                 }
             }
 
-            if (!matches.iterator().hasNext()) {
-                val thumbnailUrl = Regex("""https?://[^"'\s]+https://gupload\.xyz/data/e/hls/[^"'\s]*/thumb/[^"'\s]+\.jpg""").find(document.html())?.value
+            if (oldMatch == null && dpMatches.isEmpty() && pageMatches.isEmpty()) {
+                android.util.Log.d("GUploadExtractor", "getUrl: no patterns found, trying hls fallback")
+                val thumbnailUrl = Regex("""https?://gupload\.xyz/data/e/hls/[^"'\s]*/thumb/[^"'\s]+\.jpg""").find(fullHtml)?.value
                 if (thumbnailUrl != null) {
                     val hlsUrl = thumbnailUrl.replace("/thumb/", "/master.m3u8")
+                    android.util.Log.d("GUploadExtractor", "getUrl: hls fallback=$hlsUrl")
                     M3u8Helper.generateM3u8(name, hlsUrl, baseUrl).forEach(callback)
+                } else {
+                    android.util.Log.w("GUploadExtractor", "getUrl: no video URLs found at all")
+                    android.util.Log.d("GUploadExtractor", "getUrl: full html=$fullHtml")
                 }
             }
         } catch (e: Exception) {
-            android.util.Log.e("GUploadExtractor", "Error getting URL: \${e.message}")
+            android.util.Log.e("GUploadExtractor", "getUrl error: ${e.message}", e)
+        }
+    }
+
+    private suspend fun fetchAndExtractPlayer(
+        playerUrl: String,
+        refererUrl: String,
+        baseUrl: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        android.util.Log.d("GUploadExtractor", "fetchAndExtractPlayer: fetching $playerUrl")
+        val playerDocument = app.get(playerUrl).document
+        val playerHtml = playerDocument.html()
+        android.util.Log.d("GUploadExtractor", "fetchAndExtractPlayer: player html length=${playerHtml.length}")
+
+        val m3u8Pattern = Regex("""https?://[^"'\s]+\.(m3u8|mp4)[^"'\s]*""")
+        val matches = m3u8Pattern.findAll(playerHtml).toList()
+        android.util.Log.d("GUploadExtractor", "fetchAndExtractPlayer: found ${matches.size} m3u8/mp4 matches")
+
+        for (m in matches) {
+            val videoUrl = m.value.replace("\\/", "/")
+            if (videoUrl.contains(".m3u8")) {
+                android.util.Log.d("GUploadExtractor", "fetchAndExtractPlayer: m3u8=$videoUrl")
+                M3u8Helper.generateM3u8(name, videoUrl, baseUrl).forEach(callback)
+            } else {
+                android.util.Log.d("GUploadExtractor", "fetchAndExtractPlayer: mp4=$videoUrl")
+                callback.invoke(newExtractorLink(name, "GUpload", videoUrl, ExtractorLinkType.VIDEO) {
+                    this.referer = refererUrl
+                    this.quality = Qualities.Unknown.value
+                })
+            }
+        }
+
+        if (matches.isEmpty()) {
+            android.util.Log.w("GUploadExtractor", "fetchAndExtractPlayer: no m3u8/mp4 found in player page")
+            android.util.Log.d("GUploadExtractor", "fetchAndExtractPlayer: player preview=${playerHtml.take(500)}")
         }
     }
 

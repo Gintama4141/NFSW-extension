@@ -370,45 +370,57 @@ open class GUploadExtractor : ExtractorApi() {
             val code = pathParts.last()
             Log.d("GUploadExtractor", "getUrl: code=$code")
 
-            val embedUrl = "$baseUrl/data/e/$code/embed"
+            val embedUrl = "$baseUrl/data/e/$code"
             Log.d("GUploadExtractor", "getUrl: fetching embed $embedUrl")
             val document = app.get(embedUrl, referer = url).document
 
-            val script = document.selectFirst("script")?.html()
-            if (script == null) {
-                Log.w("GUploadExtractor", "getUrl: no script found in embed page")
-                return
+            val fullHtml = document.html()
+            Log.d("GUploadExtractor", "getUrl: page html length=${fullHtml.length}")
+            Log.d("GUploadExtractor", "getUrl: html preview=${fullHtml.take(500)}")
+
+            // Try c50b1777~ pattern (old format)
+            val oldPattern = Regex("c50b1777~[A-Za-z0-9+/=]+")
+            val oldMatch = oldPattern.find(fullHtml)
+
+            // Try _dp() pattern (new format) - extracts XOR-encoded data inside _dp('...') calls
+            val dpPattern = Regex("""_dp\(['"]([A-Za-z0-9+/=~]+)['"]""")
+            val dpMatches = dpPattern.findAll(fullHtml).toList()
+
+            Log.d("GUploadExtractor", "getUrl: old pattern found=${oldMatch != null}, dp patterns found=${dpMatches.size}")
+
+            if (oldMatch != null) {
+                val obfuscated = oldMatch.value.removePrefix("c50b1777~")
+                val decoded = xorDecode(obfuscated, "G7#kP!2qZxV9mRwL")
+                val playerUrl = String(b64UrlDecode(decoded))
+                Log.d("GUploadExtractor", "getUrl: [old] playerUrl=$playerUrl")
+                fetchAndExtractPlayer(playerUrl, url, baseUrl, callback)
+            } else if (dpMatches.isNotEmpty()) {
+                // Decode each _dp() call and try to find a valid URL
+                for (dpMatch in dpMatches) {
+                    val obfuscated = dpMatch.groupValues[1]
+                    val decoded = xorDecode(obfuscated, "G7#kP!2qZxV9mRwL")
+                    val decodedStr = String(b64UrlDecode(decoded))
+                    Log.d("GUploadExtractor", "getUrl: [dp] decoded=$decodedStr")
+                    if (decodedStr.startsWith("http")) {
+                        Log.d("GUploadExtractor", "getUrl: [dp] found valid URL: $decodedStr")
+                        fetchAndExtractPlayer(decodedStr, url, baseUrl, callback)
+                        return
+                    }
+                }
             }
-            Log.d("GUploadExtractor", "getUrl: script length=${script.length}")
 
-            val pattern = Regex("c50b1777~[A-Za-z0-9+/=]+")
-            val match = pattern.find(script)
-            if (match == null) {
-                Log.w("GUploadExtractor", "getUrl: c50b1777~ pattern not found in script")
-                Log.d("GUploadExtractor", "getUrl: script preview=${script.take(300)}")
-                return
-            }
-            Log.d("GUploadExtractor", "getUrl: found obfuscated data")
+            // Fallback: try direct m3u8 patterns in the page
+            val pageUrlPatterns = Regex("""https?://[^"'\s]+\.(m3u8|mp4)[^"'\s]*""")
+            val pageMatches = pageUrlPatterns.findAll(fullHtml).toList()
+            Log.d("GUploadExtractor", "getUrl: found ${pageMatches.size} direct m3u8/mp4 matches in page")
 
-            val obfuscated = match.value.removePrefix("c50b1777~")
-            val decoded = xorDecode(obfuscated, "G7#kP!2qZxV9mRwL")
-            val playerUrl = String(b64UrlDecode(decoded))
-            Log.d("GUploadExtractor", "getUrl: playerUrl=$playerUrl")
-
-            val playerDocument = app.get(playerUrl).document
-            val playerScript = playerDocument.html()
-
-            val m3u8Pattern = Regex("""https?://[^"'\s]+\.(m3u8|mp4)[^"'\s]*""")
-            val matches = m3u8Pattern.findAll(playerScript).toList()
-            Log.d("GUploadExtractor", "getUrl: found ${matches.size} m3u8/mp4 matches in player page")
-
-            matches.forEach { match ->
-                val videoUrl = match.value.replace("\\/", "/")
+            pageMatches.forEach { m ->
+                val videoUrl = m.value.replace("\\/", "/")
                 if (videoUrl.contains(".m3u8")) {
-                    Log.d("GUploadExtractor", "getUrl: m3u8=$videoUrl")
+                    Log.d("GUploadExtractor", "getUrl: [page] m3u8=$videoUrl")
                     M3u8Helper.generateM3u8(name, videoUrl, baseUrl).forEach(callback)
                 } else {
-                    Log.d("GUploadExtractor", "getUrl: mp4=$videoUrl")
+                    Log.d("GUploadExtractor", "getUrl: [page] mp4=$videoUrl")
                     callback.invoke(newExtractorLink(name, "GUpload", videoUrl, ExtractorLinkType.VIDEO) {
                         this.referer = url
                         this.quality = Qualities.Unknown.value
@@ -416,15 +428,16 @@ open class GUploadExtractor : ExtractorApi() {
                 }
             }
 
-            if (matches.isEmpty()) {
-                Log.d("GUploadExtractor", "getUrl: no m3u8/mp4 in player, trying hls fallback")
-                val thumbnailUrl = Regex("""https?://[^"'\s]+https://gupload\.xyz/data/e/hls/[^"'\s]*/thumb/[^"'\s]+\.jpg""").find(document.html())?.value
+            if (oldMatch == null && dpMatches.isEmpty() && pageMatches.isEmpty()) {
+                Log.d("GUploadExtractor", "getUrl: no patterns found, trying hls fallback")
+                val thumbnailUrl = Regex("""https?://gupload\.xyz/data/e/hls/[^"'\s]*/thumb/[^"'\s]+\.jpg""").find(fullHtml)?.value
                 if (thumbnailUrl != null) {
                     val hlsUrl = thumbnailUrl.replace("/thumb/", "/master.m3u8")
                     Log.d("GUploadExtractor", "getUrl: hls fallback=$hlsUrl")
                     M3u8Helper.generateM3u8(name, hlsUrl, baseUrl).forEach(callback)
                 } else {
                     Log.w("GUploadExtractor", "getUrl: no video URLs found at all")
+                    Log.d("GUploadExtractor", "getUrl: full html=$fullHtml")
                 }
             }
         } catch (e: Exception) {
@@ -434,7 +447,41 @@ open class GUploadExtractor : ExtractorApi() {
 
     private fun getBaseUrl(url: String): String =
         runCatching { URI(url).let { "${it.scheme}://${it.host}" } }.getOrDefault(url)
-}
+
+    private suspend fun fetchAndExtractPlayer(
+        playerUrl: String,
+        refererUrl: String,
+        baseUrl: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        Log.d("GUploadExtractor", "fetchAndExtractPlayer: fetching $playerUrl")
+        val playerDocument = app.get(playerUrl).document
+        val playerHtml = playerDocument.html()
+        Log.d("GUploadExtractor", "fetchAndExtractPlayer: player html length=${playerHtml.length}")
+
+        val m3u8Pattern = Regex("""https?://[^"'\s]+\.(m3u8|mp4)[^"'\s]*""")
+        val matches = m3u8Pattern.findAll(playerHtml).toList()
+        Log.d("GUploadExtractor", "fetchAndExtractPlayer: found ${matches.size} m3u8/mp4 matches")
+
+        for (m in matches) {
+            val videoUrl = m.value.replace("\\/", "/")
+            if (videoUrl.contains(".m3u8")) {
+                Log.d("GUploadExtractor", "fetchAndExtractPlayer: m3u8=$videoUrl")
+                M3u8Helper.generateM3u8(name, videoUrl, baseUrl).forEach(callback)
+            } else {
+                Log.d("GUploadExtractor", "fetchAndExtractPlayer: mp4=$videoUrl")
+                callback.invoke(newExtractorLink(name, "GUpload", videoUrl, ExtractorLinkType.VIDEO) {
+                    this.referer = refererUrl
+                    this.quality = Qualities.Unknown.value
+                })
+            }
+        }
+
+        if (matches.isEmpty()) {
+            Log.w("GUploadExtractor", "fetchAndExtractPlayer: no m3u8/mp4 found in player page")
+            Log.d("GUploadExtractor", "fetchAndExtractPlayer: player preview=${playerHtml.take(500)}")
+        }
+    }
 
 open class ByseSXLocal : ExtractorApi() {
     override var name = "Byse"
