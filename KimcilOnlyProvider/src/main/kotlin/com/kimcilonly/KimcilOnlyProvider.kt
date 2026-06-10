@@ -311,7 +311,7 @@ open class GUploadExtractor : ExtractorApi() {
             val baseUrl = getBaseUrl(url)
             val pathParts = url.removePrefix(baseUrl).removePrefix("/").split("/")
             if (pathParts.size < 2) return
-            val code = pathParts[1]
+            val code = pathParts.last()
 
             val embedUrl = "$baseUrl/data/e/$code/embed"
             val document = app.get(embedUrl, referer = url).document
