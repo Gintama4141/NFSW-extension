@@ -1,4 +1,4 @@
-version = 1
+version = 2
 
 cloudstream {
     language = "id"
@@ -8,5 +8,5 @@ cloudstream {
     status = 1
     tvTypes = listOf("NSFW")
 
-    iconUrl = "https://bokepindoh.codes/favicon.ico"
+    iconUrl = "https://bokepindoh.party/favicon.ico"
 }
