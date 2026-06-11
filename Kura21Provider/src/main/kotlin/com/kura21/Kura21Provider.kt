@@ -137,8 +137,8 @@ class Kura21Provider : MainAPI() {
             Log.d("Kura21", "loadLinks: AJAX response length=${response.length}")
             Log.d("Kura21", "loadLinks: AJAX response preview=${response.take(500)}")
 
-            // Parse iframe from AJAX response
-            val iframeMatch = Regex("""<iframe[^>]+src=["']([^"']+)["']""").find(response)
+            // Parse iframe from AJAX response (case-insensitive)
+            val iframeMatch = Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(response)
             val iframeSrc = iframeMatch?.groupValues?.get(1)
             Log.d("Kura21", "loadLinks: iframeSrc=$iframeSrc")
 
@@ -194,6 +194,9 @@ class Kura21Provider : MainAPI() {
                 iframeSrc.contains("playmogo") || iframeSrc.contains("pendek") || iframeSrc.contains("dood") ||
                 iframeSrc.contains("luluvdo") || iframeSrc.contains("lulustream") || iframeSrc.contains("luluvid") -> {
                     extractDoodLike(iframeSrc, referer, callback)
+                }
+                iframeSrc.contains("terbit2") -> {
+                    extractTerbit2(iframeSrc, referer, callback)
                 }
                 else -> {
                     loadExtractor(iframeSrc, referer, {}, callback)
@@ -317,6 +320,65 @@ class Kura21Provider : MainAPI() {
             Log.w("Kura21", "extractDoodLike: no video URL found in $fetchUrl")
         } catch (e: Exception) {
             Log.e("Kura21", "extractDoodLike error: ${e.message}", e)
+        }
+    }
+
+    private suspend fun extractTerbit2(
+        url: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            Log.d("Kura21", "extractTerbit2: fetching $url")
+            val document = app.get(url, referer = referer).document
+            val pageHtml = document.html()
+
+            // Decode packed script (Dean Edwards packer)
+            val decodedScript = decodePackerScript(pageHtml)
+            val contentToSearch = decodedScript ?: pageHtml
+
+            Log.d("Kura21", "extractTerbit2: searching for video URLs in ${contentToSearch.length} chars")
+
+            // Find all m3u8 URLs
+            val m3u8Patterns = listOf(
+                Regex("""(https?://[^"'\s]+\.m3u8[^"'\s]*)"""),
+                Regex("""["']([^"']*\.m3u8[^"']*)["']""")
+            )
+
+            for (pattern in m3u8Patterns) {
+                pattern.findAll(contentToSearch).forEach { match ->
+                    var videoUrl = match.groupValues.getOrNull(1) ?: match.value
+                    videoUrl = videoUrl.replace("\\/", "/").trim()
+                    if (videoUrl.startsWith("http") && !videoUrl.contains("eval(")) {
+                        Log.d("Kura21", "extractTerbit2: found m3u8 = ${videoUrl.take(150)}")
+                        M3u8Helper.generateM3u8(name, videoUrl, url, headers = mapOf("Referer" to url)).forEach(callback)
+                    }
+                }
+            }
+
+            // Find MP4 URLs
+            val mp4Pattern = Regex("""(https?://[^"'\s]+\.mp4[^"'\s]*)""")
+            mp4Pattern.findAll(contentToSearch).forEach { match ->
+                var videoUrl = match.groupValues[1].replace("\\/", "/").trim()
+                if (videoUrl.startsWith("http")) {
+                    Log.d("Kura21", "extractTerbit2: found mp4 = ${videoUrl.take(150)}")
+                    callback.invoke(
+                        newExtractorLink(name, "Terbit2", videoUrl, ExtractorLinkType.VIDEO) {
+                            this.referer = url
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
+                }
+            }
+
+            // If still nothing, try generic extraction on the iframe page
+            if (decodedScript == null) {
+                Log.d("Kura21", "extractTerbit2: trying generic extraction on iframe page")
+                extractGeneric(url, referer, callback)
+            }
+
+        } catch (e: Exception) {
+            Log.e("Kura21", "extractTerbit2 error: ${e.message}", e)
         }
     }
 
