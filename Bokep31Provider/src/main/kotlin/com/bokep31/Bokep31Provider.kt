@@ -300,13 +300,12 @@ class Bokep31Provider : MainAPI() {
         return null
     }
 
-    private fun extractPoster(element: org.jsoup.nodes.Element): String? {
-        val mainThumb = element.attr("data-main-thumb").takeIf { it.isNotBlank() }
-        if (mainThumb != null) return mainThumb
-
-        val img = element.selectFirst("img.video-main-thumb, img") ?: return null
-        return img.attr("data-lazy-src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
-            ?: img.attr("data-src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
-            ?: img.attr("src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
+    private fun parseDurationISO(duration: String?): Int? {
+        if (duration.isNullOrBlank()) return null
+        val match = Regex("PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?").find(duration) ?: return null
+        val hours = match.groupValues[1].toIntOrNull() ?: 0
+        val minutes = match.groupValues[2].toIntOrNull() ?: 0
+        val seconds = match.groupValues[3].toIntOrNull() ?: 0
+        return hours * 3600 + minutes * 60 + seconds
     }
-
+}
