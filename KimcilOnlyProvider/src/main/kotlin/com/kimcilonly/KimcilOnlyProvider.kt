@@ -108,8 +108,11 @@ class KimcilOnlyProvider : MainAPI() {
                         fullUrl.contains("byse") -> {
                             byseExtractor.getUrl(fullUrl, data, subtitleCallback, callback)
                         }
-                        fullUrl.contains("playmogo") || fullUrl.contains("pendek") -> {
+                        fullUrl.contains("playmogo") -> {
                             extractDoodLike(fullUrl, data, callback)
+                        }
+                        fullUrl.contains("pendek.my.id") -> {
+                            extractPendekMyId(fullUrl, data, callback)
                         }
                         fullUrl.contains("doods") -> {
                             extractDoodLike(fullUrl, data, callback)
@@ -197,7 +200,8 @@ class KimcilOnlyProvider : MainAPI() {
             when {
                 link.contains("byse") -> byseExtractor.getUrl(link, referer, subtitleCallback, callback)
                 link.contains("doods") -> { extractDoodLike(link, referer, callback); extractVidaraLike(link, referer, callback) }
-                link.contains("playmogo") || link.contains("pendek") -> extractDoodLike(link, referer, callback)
+                link.contains("playmogo") -> extractDoodLike(link, referer, callback)
+                link.contains("pendek.my.id") -> extractPendekMyId(link, referer, callback)
                 else -> { loadExtractor(link, referer, subtitleCallback, callback); extractGeneric(link, referer, callback) }
             }
         } catch (e: Exception) {
@@ -327,6 +331,60 @@ class KimcilOnlyProvider : MainAPI() {
             }
         }
         return null
+    }
+
+    private suspend fun extractPendekMyId(
+        url: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            Log.d("KimcilOnly", "extractPendekMyId: fetching $url")
+            val document = app.get(url, referer = referer).document
+            val html = document.html()
+
+            val hexPattern = Regex("""const _0x1\s*=\s*['"]([a-fA-F0-9|]+)['"]""")
+            val match = hexPattern.find(html)
+            if (match == null) {
+                Log.w("KimcilOnly", "extractPendekMyId: no hex encoded URL found")
+                return
+            }
+
+            val hexString = match.groupValues[1]
+            Log.d("KimcilOnly", "extractPendekMyId: found hex string, length=${hexString.length}")
+
+            val decodedUrl = decodeHexString(hexString)
+            if (decodedUrl.isNullOrBlank()) {
+                Log.w("KimcilOnly", "extractPendekMyId: failed to decode hex string")
+                return
+            }
+
+            Log.d("KimcilOnly", "extractPendekMyId: decoded URL = ${decodedUrl.take(100)}")
+
+            callback.invoke(
+                newExtractorLink(name, "VidSonic", decodedUrl, ExtractorLinkType.VIDEO) {
+                    this.referer = url
+                    this.quality = Qualities.Unknown.value
+                }
+            )
+        } catch (e: Exception) {
+            Log.e("KimcilOnly", "extractPendekMyId error: ${e.message}", e)
+        }
+    }
+
+    private fun decodeHexString(hex: String): String? {
+        return try {
+            val cleanHex = hex.replace("|", "")
+            val sb = StringBuilder()
+            for (i in cleanHex.indices step 2) {
+                val charCode = cleanHex.substring(i, i + 2).toInt(16)
+                sb.append(charCode.toChar())
+            }
+            sb.toString().reversed()
+        } catch (e: Exception) {
+            Log.e("KimcilOnly", "decodeHexString error: ${e.message}", e)
+            null
+        }
     }
 }
 
