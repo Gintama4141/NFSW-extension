@@ -34,12 +34,8 @@ class BokepIndohProvider : MainAPI() {
             val link = titleElement?.attr("href") ?: return@mapNotNull null
             if (link.isBlank()) return@mapNotNull null
 
-            val img = element.selectFirst("img.video-main-thumb, img")
-            var image = img?.attr("data-src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
-                ?: img?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
-
             newMovieSearchResponse(title, fixUrl(link), TvType.NSFW) {
-                this.posterUrl = image
+                this.posterUrl = extractPoster(element)
             }
         }
         return newHomePageResponse(request.name, home, hasNext = elements.isNotEmpty())
@@ -56,14 +52,20 @@ class BokepIndohProvider : MainAPI() {
             val link = titleElement?.attr("href") ?: return@mapNotNull null
             if (link.isBlank()) return@mapNotNull null
 
-            val img = element.selectFirst("img.video-main-thumb, img")
-            var image = img?.attr("data-src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
-                ?: img?.attr("src")?.takeIf { it.isNotBlank() && !it.startsWith("data:") }
-
             newMovieSearchResponse(title, fixUrl(link), TvType.NSFW) {
-                this.posterUrl = image
+                this.posterUrl = extractPoster(element)
             }
         }
+    }
+
+    private fun extractPoster(element: org.jsoup.nodes.Element): String? {
+        val mainThumb = element.attr("data-main-thumb").takeIf { it.isNotBlank() }
+        if (mainThumb != null) return mainThumb
+
+        val img = element.selectFirst("img.video-main-thumb, img") ?: return null
+        return img.attr("data-lazy-src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
+            ?: img.attr("data-src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
+            ?: img.attr("src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
     }
 
     override suspend fun load(url: String): LoadResponse? {
