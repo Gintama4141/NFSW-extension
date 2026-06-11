@@ -178,7 +178,7 @@ class Kura21Provider : MainAPI() {
 
         Log.d("Kura21", "loadLinks: found ${iframes.size} iframes: $iframes")
 
-        iframes.distinct().forEach { iframeSrc ->
+        iframes.distinct().map { iframeSrc ->
             async(Dispatchers.IO) {
                 routeAndExtract(iframeSrc, data, callback)
             }
