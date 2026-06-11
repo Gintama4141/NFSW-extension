@@ -92,7 +92,7 @@ class Kura21Provider : MainAPI() {
 
         val postId = document.selectFirst("#muvipro_player_content_id")?.attr("data-id")
 
-        return newMovieLoadResponse(title, url, TvType.NSFW, url) {
+        return newMovieLoadResponse(title, url, TvType.NSFW, "${url}#p2") {
             this.posterUrl = poster
             this.plot = description
             this.tags = tags
@@ -106,7 +106,14 @@ class Kura21Provider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean = coroutineScope {
         Log.d("Kura21", "loadLinks: fetching $data")
-        val document = app.get(data).document
+        val (pageUrl, tab) = if (data.contains("#")) {
+            val parts = data.split("#", limit = 2)
+            parts[0] to parts[1]
+        } else {
+            data to "p2"
+        }
+        Log.d("Kura21", "loadLinks: pageUrl=$pageUrl, tab=$tab")
+        val document = app.get(pageUrl).document
 
         val postId = document.selectFirst("#muvipro_player_content_id")?.attr("data-id")
         Log.d("Kura21", "loadLinks: postId=$postId")
@@ -125,7 +132,7 @@ class Kura21Provider : MainAPI() {
                 ajaxUrl,
                 data = mapOf(
                     "action" to "muvipro_player_content",
-                    "tab" to "p2",
+                    "tab" to tab,
                     "post_id" to postId
                 ),
                 headers = mapOf(
