@@ -105,37 +105,53 @@ class Bokep31Provider : MainAPI() {
 
     private suspend fun extractDoodLike(url: String, referer: String, callback: (ExtractorLink) -> Unit) {
         try {
-            val fetchUrl = url.replace("/e/", "/d/")
-            Log.d(TAG, "extractDoodLike: fetching $fetchUrl")
-            val doc = app.get(fetchUrl, referer = referer).document
-            val html = doc.html()
-            val decoded = html.decodePacker()
+            val embedUrl = url
+            val directUrl = url.replace("/e/", "/d/")
+            Log.d(TAG, "extractDoodLike: embed=$embedUrl direct=$directUrl")
 
-            if (decoded != null && emitVideoUrl(decoded, fetchUrl, "Packer", callback)) return
-            if (tryPassMd5(doc, fetchUrl, callback)) return
-            if (emitVideoUrl(html, fetchUrl, "Direct", callback)) return
-            tryHashHls(decoded, html, fetchUrl, callback)
+            // Strategy 1: packer decode from /d/ page (LuluVid/JWPlayer)
+            val directDoc = app.get(directUrl, referer = referer).document
+            val directHtml = directDoc.html()
+            val decoded = directHtml.decodePacker()
+            if (decoded != null && emitVideoUrl(decoded, directUrl, "Packer", callback)) return
+
+            // Strategy 2: pass_md5 from /e/ page (DoodStream/PlayMogo)
+            val embedDoc = app.get(embedUrl, referer = referer).document
+            if (tryPassMd5(embedDoc, embedUrl, callback)) return
+
+            // Strategy 3: direct URL in /d/ HTML
+            if (emitVideoUrl(directHtml, directUrl, "Direct", callback)) return
+
+            // Strategy 4: hash HLS — skip for DoodStream (serves MP4, not HLS)
+            if (!url.containsDoodStream()) tryHashHls(decoded, directHtml, directUrl, callback)
         } catch (e: Exception) {
             Log.e(TAG, "extractDoodLike: ${e.message}", e)
         }
     }
 
-    private suspend fun tryPassMd5(doc: org.jsoup.nodes.Document, fetchUrl: String, callback: (ExtractorLink) -> Unit): Boolean {
+    private suspend fun tryPassMd5(doc: org.jsoup.nodes.Document, embedUrl: String, callback: (ExtractorLink) -> Unit): Boolean {
         for (script in doc.select("script")) {
             val path = script.html().findPassMd5() ?: continue
             Log.d(TAG, "tryPassMd5: path = $path")
-            val baseUrl = fetchUrl.substringBefore("/d/")
+            val baseUrl = embedUrl.substringBefore("/e/")
             val response = app.get(
                 "$baseUrl/pass_md5/$path",
-                headers = mapOf("Referer" to fetchUrl, "X-Requested-With" to "XMLHttpRequest")
+                headers = mapOf(
+                    "Referer" to embedUrl,
+                    "X-Requested-With" to "XMLHttpRequest"
+                )
             ).text
             Log.d(TAG, "tryPassMd5: response = ${response.take(120)}")
+            if (response == "RELOAD") {
+                Log.w(TAG, "tryPassMd5: server requested RELOAD (Turnstile), falling back")
+                return false
+            }
             if (response.isNotBlank() && response.startsWith("http")) {
                 val token = path.substringAfterLast("/")
                 val suffix = (1..10).map { ALPHANUM.random() }.joinToString("")
                 val videoUrl = "$response$suffix?token=$token&expiry=${System.currentTimeMillis()}"
                 callback(newExtractorLink(name, "DoodStream", videoUrl, ExtractorLinkType.VIDEO) {
-                    referer = fetchUrl
+                    referer = embedUrl
                     quality = Qualities.Unknown.value
                 })
                 return true
@@ -145,6 +161,7 @@ class Bokep31Provider : MainAPI() {
     }
 
     private suspend fun tryHashHls(decoded: String?, html: String, fetchUrl: String, callback: (ExtractorLink) -> Unit) {
+        if (fetchUrl.containsDoodStream()) return
         val hashMatch = Regex(""""hash"\s*:\s*"([a-f0-9]{32,})"""").find(html)
         val fileId = fetchUrl.substringAfterLast("/d/").substringBefore("?")
         if (hashMatch == null || fileId.isEmpty()) {
@@ -238,7 +255,9 @@ class Bokep31Provider : MainAPI() {
     }
 
     private fun String.isDoodLike(): Boolean = contains("playmogo") || contains("pendek") || contains("dood") ||
-        contains("luluvdo") || contains("lulustream")
+        contains("luluvid") || contains("lulustream")
+
+    private fun String.containsDoodStream(): Boolean = contains("playmogo") || contains("dood")
 
     companion object {
         private const val TAG = "Bokep31"
