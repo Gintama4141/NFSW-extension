@@ -105,16 +105,19 @@ class BokepIndohProvider : MainAPI() {
 
     private suspend fun extractDoodLike(url: String, referer: String, callback: (ExtractorLink) -> Unit) {
         try {
-            val fetchUrl = url.replace("/e/", "/d/")
-            Log.d(TAG, "extractDoodLike: fetching $fetchUrl")
+            val isBebasnonton = url.contains("bebasnonton")
+            val fetchUrl = if (isBebasnonton) url else url.replace("/e/", "/d/")
+            val videoReferer = if (isBebasnonton) "https://bebasnonton.online/" else fetchUrl
+            
+            Log.d(TAG, "extractDoodLike: fetching $fetchUrl (isBebasnonton=$isBebasnonton)")
             val doc = app.get(fetchUrl, referer = referer).document
             val html = doc.html()
             val decoded = html.decodePacker()
 
-            if (decoded != null && emitVideoUrl(decoded, fetchUrl, "Packer", callback)) return
-            if (tryPassMd5(doc, fetchUrl, callback)) return
-            if (emitVideoUrl(html, fetchUrl, "Direct", callback)) return
-            tryHashHls(decoded, html, fetchUrl, callback)
+            if (decoded != null && emitVideoUrl(decoded, videoReferer, "Packer", callback)) return
+            if (!isBebasnonton && tryPassMd5(doc, fetchUrl, callback)) return
+            if (emitVideoUrl(html, videoReferer, "Direct", callback)) return
+            if (!isBebasnonton) tryHashHls(decoded, html, fetchUrl, callback)
         } catch (e: Exception) {
             Log.e(TAG, "extractDoodLike: ${e.message}", e)
         }
@@ -174,7 +177,9 @@ class BokepIndohProvider : MainAPI() {
             return true
         }
         Regex("""https?://[^"'\s]+\.mp4[^"'\s]*""").find(source)?.let { match ->
-            val url = match.value.replace("\\/", "/")
+            var url = match.value.replace("\\/", "/")
+            // Clean up %image.mp4 artifact from packed decode
+            url = url.replace("%image.mp4", ".mp4")
             Log.d(TAG, "emitVideoUrl [$label] mp4 = ${url.take(150)}")
             callback(newExtractorLink(name, name, url, ExtractorLinkType.VIDEO) {
                 this.referer = referer
