@@ -255,7 +255,7 @@ class Bokep31Provider : MainAPI() {
     }
 
     private fun String.isDoodLike(): Boolean = contains("playmogo") || contains("pendek") || contains("dood") ||
-        contains("luluvid") || contains("lulustream")
+        contains("luluvid") || contains("luluvdo") || contains("lulustream")
 
     private fun String.containsDoodStream(): Boolean = contains("playmogo") || contains("dood")
 
@@ -274,6 +274,7 @@ class Bokep31Provider : MainAPI() {
             Regex("""['"](/pass_md5/[^'"]+)['"]"""),
         )
         private val CDN_DOMAINS = listOf(
+            "iihbzqjhkqull.tnmr.org",
             "DrMtUew6NHFm.tnmr.org",
             "hw6ugf3856NN.tnmr.org",
             "hw.jmnl.xyz",
