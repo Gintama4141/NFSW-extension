@@ -24,71 +24,28 @@ class BokepIndohProvider : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page == 1) request.data else "${request.data}page/$page/"
-        val document = app.get(url).document
-
-        val elements = document.select("article.thumb-block, article.loop-video")
-
-        val home = elements.mapNotNull { element ->
-            val titleElement = element.selectFirst("a")
-            val title = titleElement?.attr("title") ?: element.selectFirst(".entry-header span, header.entry-header span")?.text() ?: return@mapNotNull null
-            val link = titleElement?.attr("href") ?: return@mapNotNull null
-            if (link.isBlank()) return@mapNotNull null
-
-            newMovieSearchResponse(title, fixUrl(link), TvType.NSFW) {
-                this.posterUrl = extractPoster(element)
-            }
-        }
-        return newHomePageResponse(request.name, home, hasNext = elements.isNotEmpty())
+        val items = app.get(url).document.select(ITEM_SELECTOR).mapNotNull { it.parseSearchItem() }
+        return newHomePageResponse(request.name, items, hasNext = items.isNotEmpty())
     }
 
     override suspend fun search(query: String): List<SearchResponse>? {
-        val searchUrl = "$mainUrl/?s=$query"
-        val document = app.get(searchUrl).document
-
-        val elements = document.select("article.thumb-block, article.loop-video")
-        return elements.mapNotNull { element ->
-            val titleElement = element.selectFirst("a")
-            val title = titleElement?.attr("title") ?: element.selectFirst(".entry-header span, header.entry-header span")?.text() ?: return@mapNotNull null
-            val link = titleElement?.attr("href") ?: return@mapNotNull null
-            if (link.isBlank()) return@mapNotNull null
-
-            newMovieSearchResponse(title, fixUrl(link), TvType.NSFW) {
-                this.posterUrl = extractPoster(element)
-            }
-        }
-    }
-
-    private fun extractPoster(element: org.jsoup.nodes.Element): String? {
-        val mainThumb = element.attr("data-main-thumb").takeIf { it.isNotBlank() }
-        if (mainThumb != null) return mainThumb
-
-        val img = element.selectFirst("img.video-main-thumb, img") ?: return null
-        return img.attr("data-lazy-src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
-            ?: img.attr("data-src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
-            ?: img.attr("src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
+        return app.get("$mainUrl/?s=$query").document
+            .select(ITEM_SELECTOR)
+            .mapNotNull { it.parseSearchItem() }
     }
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
-
         val title = document.selectFirst("h1.entry-title")?.text()
             ?: document.selectFirst("title")?.text()?.substringBefore(" | ")?.trim()
             ?: return null
 
-        val poster = document.selectFirst("meta[property=og:image]")?.attr("content")
-
-        val description = document.selectFirst("meta[property=og:description]")?.attr("content")
-            ?: document.selectFirst(".video-description p")?.text()
-
-        val duration = document.selectFirst("meta[itemprop=duration]")?.attr("content")
-
-        val tags = document.select(".tags-list a.label, .categories a, .video-tags a").map { it.text().trim() }
-
         return newMovieLoadResponse(title, url, TvType.NSFW, url) {
-            this.posterUrl = poster
-            this.plot = description
-            this.tags = tags
-            this.duration = parseDurationISO(duration)
+            posterUrl = document.selectFirst("meta[property=og:image]")?.attr("content")
+            plot = document.selectFirst("meta[property=og:description]")?.attr("content")
+                ?: document.selectFirst(".video-description p")?.text()
+            tags = document.select(".tags-list a.label, .categories a, .video-tags a").map { it.text().trim() }
+            duration = document.selectFirst("meta[itemprop=duration]")?.attr("content")?.parseDurationISO()
         }
     }
 
@@ -100,211 +57,208 @@ class BokepIndohProvider : MainAPI() {
     ): Boolean = coroutineScope {
         val document = app.get(data).document
 
-        val iframes = mutableListOf<String>()
-
-        document.select("iframe").forEach { iframe ->
-            val lazySrc = iframe.attr("data-lazy-src").takeIf { it.isNotBlank() && it != "about:blank" }
-            val src = iframe.attr("src").takeIf { it.isNotBlank() && it != "about:blank" }
-            val url = lazySrc ?: src
-            if (url != null) iframes.add(fixUrl(url))
-        }
-
-        if (iframes.isEmpty()) {
-            document.select("meta[itemprop=embedURL]").forEach { meta ->
-                val url = meta.attr("content").takeIf { it.isNotBlank() }
-                if (url != null) iframes.add(fixUrl(url))
+        val iframes = extractIframes(document).ifEmpty {
+            document.select("meta[itemprop=embedURL]").mapNotNull { meta ->
+                meta.attr("content").takeIf { it.isNotBlank() }
             }
-        }
+        }.map { fixUrl(it) }
 
-        Log.d("BokepIndoh", "Found ${iframes.size} iframes: $iframes")
+        Log.d(TAG, "Found ${iframes.size} iframes: $iframes")
 
-        iframes.distinct().map { iframeSrc ->
+        iframes.distinct().map { src ->
             async(Dispatchers.IO) {
                 try {
-                    if (iframeSrc.contains("luluvid") || iframeSrc.contains("luluvdo") || iframeSrc.contains("lulustream") ||
-                        iframeSrc.contains("playmogo") || iframeSrc.contains("pendek") || iframeSrc.contains("dood")) {
-                        extractDoodLike(iframeSrc, data, callback)
-                    } else {
-                        loadExtractor(iframeSrc, data, subtitleCallback, callback)
-                    }
+                    if (src.isDoodLike()) extractDoodLike(src, data, callback)
+                    else loadExtractor(src, data, subtitleCallback, callback)
                 } catch (e: Exception) {
-                    Log.e("BokepIndoh", "Error extracting $iframeSrc: ${e.message}")
+                    Log.e(TAG, "Error extracting $src: ${e.message}")
                 }
             }
         }.awaitAll()
 
-        return@coroutineScope true
+        true
     }
 
-    private suspend fun extractDoodLike(
-        url: String,
-        referer: String,
-        callback: (ExtractorLink) -> Unit
-    ) {
-        try {
-            val fetchUrl = if (url.contains("/e/")) url.replace("/e/", "/d/") else url
-            Log.d("BokepIndoh", "extractDoodLike: fetching $fetchUrl")
-            val document = app.get(fetchUrl, referer = referer).document
-            val scripts = document.select("script")
-            Log.d("BokepIndoh", "extractDoodLike: found ${scripts.size} scripts")
-            val pageHtml = document.html()
+    // ---- Shared parsing ----
 
-            Log.d("BokepIndoh", "extractDoodLike: trying packer decoder")
-            val decodedScript = decodePackerScript(pageHtml)
-            if (decodedScript != null) {
-                Log.d("BokepIndoh", "extractDoodLike: packer decoded, length=${decodedScript.length}")
-                val m3u8InDecoded = Regex("""https?://[^"'\s]+\.m3u8[^"'\s]*""").find(decodedScript)
-                if (m3u8InDecoded != null) {
-                    val videoUrl = m3u8InDecoded.value.replace("\\/", "/")
-                    Log.d("BokepIndoh", "extractDoodLike: [packer] m3u8 = ${videoUrl.take(150)}")
-                    M3u8Helper.generateM3u8(name, videoUrl, fetchUrl, headers = mapOf("Referer" to fetchUrl)).forEach(callback)
-                    return
-                }
-                val mp4InDecoded = Regex("""https?://[^"'\s]+\.mp4[^"'\s]*""").find(decodedScript)
-                if (mp4InDecoded != null) {
-                    val videoUrl = mp4InDecoded.value.replace("\\/", "/")
-                    Log.d("BokepIndoh", "extractDoodLike: [packer] mp4 = ${videoUrl.take(150)}")
-                    callback.invoke(
-                        newExtractorLink(name, name, videoUrl, ExtractorLinkType.VIDEO) {
-                            this.referer = fetchUrl
-                            this.quality = Qualities.Unknown.value
-                        }
-                    )
-                    return
-                }
-            }
-
-            for (script in scripts) {
-                val scriptContent = script.html()
-                val passMd5Path = findPassMd5(scriptContent)
-                if (passMd5Path != null) {
-                    Log.d("BokepIndoh", "extractDoodLike: pass_md5 path = $passMd5Path")
-                    val baseUrl = fetchUrl.substringBefore("/e/").substringBefore("/d/")
-                    val passMd5Url = "$baseUrl/pass_md5/$passMd5Path"
-                    Log.d("BokepIndoh", "extractDoodLike: fetching $passMd5Url")
-                    val response = app.get(
-                        passMd5Url,
-                        headers = mapOf("Referer" to fetchUrl, "X-Requested-With" to "XMLHttpRequest")
-                    ).text
-                    Log.d("BokepIndoh", "extractDoodLike: pass_md5 response = ${response.take(120)}")
-                    if (response.isNotBlank() && response.startsWith("http")) {
-                        val randomSuffix = (1..10).map { "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".random() }.joinToString("")
-                        val token = passMd5Path.substringAfterLast("/")
-                        val videoUrl = "$response$randomSuffix?token=$token&expiry=${System.currentTimeMillis()}"
-                        Log.d("BokepIndoh", "extractDoodLike: videoUrl = ${videoUrl.take(120)}")
-                        callback.invoke(
-                            newExtractorLink(name, "DoodStream", videoUrl, ExtractorLinkType.VIDEO) {
-                                this.referer = fetchUrl
-                                this.quality = Qualities.Unknown.value
-                            }
-                        )
-                        return
-                    }
-                }
-            }
-
-            Log.d("BokepIndoh", "extractDoodLike: no pass_md5 found, trying m3u8/mp4 fallback")
-
-            val m3u8Match = Regex("""(https?://[^"'\s]+\.m3u8[^"'\s]*)""").find(pageHtml)
-            if (m3u8Match != null) {
-                val videoUrl = m3u8Match.groupValues[1].replace("\\/", "/")
-                Log.d("BokepIndoh", "extractDoodLike: m3u8 fallback = ${videoUrl.take(120)}")
-                M3u8Helper.generateM3u8(name, videoUrl, fetchUrl, headers = mapOf("Referer" to fetchUrl)).forEach(callback)
-                return
-            }
-
-            val mp4Match = Regex("""(https?://[^"'\s]+\.mp4[^"'\s]*)""").find(pageHtml)
-            if (mp4Match != null) {
-                val videoUrl = mp4Match.groupValues[1].replace("\\/", "/")
-                Log.d("BokepIndoh", "extractDoodLike: mp4 fallback = ${videoUrl.take(120)}")
-                callback.invoke(
-                    newExtractorLink(name, name, videoUrl, ExtractorLinkType.VIDEO) {
-                        this.referer = fetchUrl
-                        this.quality = Qualities.Unknown.value
-                    }
-                )
-                return
-            }
-
-            Log.d("BokepIndoh", "extractDoodLike: no direct m3u8/mp4, trying hash-based HLS construction")
-            val hashMatch = Regex(""""hash"\s*:\s*"([a-f0-9]{32,})"""").find(pageHtml)
-            val fileId = fetchUrl.substringAfterLast("/d/").substringAfterLast("/e/").substringBefore("?")
-            if (hashMatch != null && fileId.isNotEmpty()) {
-                val hash = hashMatch.groupValues[1]
-                Log.d("BokepIndoh", "extractDoodLike: hash=$hash, fileId=$fileId")
-                val dirMatch = Regex("""/hls2/(\d{2})/(\d+)/""").find(decodedScript ?: pageHtml)
-                val dir1 = dirMatch?.groupValues?.get(1) ?: "03"
-                val dir2 = dirMatch?.groupValues?.get(2) ?: "00000"
-                val videoHash = "${fileId}_h"
-                val cdnDomains = listOf("hw6ugf3856NN.tnmr.org", "hw.jmnl.xyz", "hw.cdnst1.xyz")
-                for (cdn in cdnDomains) {
-                    val hlsUrl = "https://$cdn/hls2/$dir1/$dir2/$videoHash/master.m3u8?e=28800&f=$fileId&i=0.3&sp=0"
-                    Log.d("BokepIndoh", "extractDoodLike: trying HLS $hlsUrl")
-                    try {
-                        M3u8Helper.generateM3u8(name, hlsUrl, fetchUrl, headers = mapOf("Referer" to fetchUrl)).forEach(callback)
-                        return
-                    } catch (_: Exception) {}
-                }
-            }
-
-            Log.w("BokepIndoh", "extractDoodLike: no video URL found in $fetchUrl")
-        } catch (e: Exception) {
-            Log.e("BokepIndoh", "extractDoodLike error: ${e.message}", e)
+    private fun org.jsoup.nodes.Element.parseSearchItem(): SearchResponse? {
+        val titleEl = selectFirst("a") ?: return null
+        val title = titleEl.attr("title").takeIf { it.isNotBlank() }
+            ?: selectFirst(".entry-header span, header.entry-header span")?.text()
+            ?: return null
+        val link = titleEl.attr("href").takeIf { it.isNotBlank() } ?: return null
+        return newMovieSearchResponse(title, fixUrl(link), TvType.NSFW) {
+            posterUrl = extractPoster()
         }
     }
 
-    private fun decodePackerScript(html: String): String? {
+    private fun org.jsoup.nodes.Element.extractPoster(): String? {
+        attr("data-main-thumb").takeIf { it.isNotBlank() }?.let { return it }
+        return selectFirst("img.video-main-thumb, img")?.let { img ->
+            img.attr("data-lazy-src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
+                ?: img.attr("data-src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
+                ?: img.attr("src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
+        }
+    }
+
+    // ---- Doodstream-like extractor ----
+
+    private suspend fun extractDoodLike(url: String, referer: String, callback: (ExtractorLink) -> Unit) {
         try {
-            val packerRegex = Regex(
-                """eval\(function\(p,a,c,k,e,d\)\{[^}]*\}\('(.+?)',(\d+),(\d+),'([^']*?)'\.split\('\|'\)""",
-                RegexOption.DOT_MATCHES_ALL
-            )
-            val match = packerRegex.find(html) ?: return null
+            val fetchUrl = url.replace("/e/", "/d/")
+            Log.d(TAG, "extractDoodLike: fetching $fetchUrl")
+            val doc = app.get(fetchUrl, referer = referer).document
+            val html = doc.html()
+            val decoded = html.decodePacker()
+
+            if (decoded != null && emitVideoUrl(decoded, fetchUrl, "Packer", callback)) return
+            if (tryPassMd5(doc, fetchUrl, callback)) return
+            if (emitVideoUrl(html, fetchUrl, "Direct", callback)) return
+            tryHashHls(decoded, html, fetchUrl, callback)
+        } catch (e: Exception) {
+            Log.e(TAG, "extractDoodLike: ${e.message}", e)
+        }
+    }
+
+    private suspend fun tryPassMd5(doc: org.jsoup.nodes.Document, fetchUrl: String, callback: (ExtractorLink) -> Unit): Boolean {
+        for (script in doc.select("script")) {
+            val path = script.html().findPassMd5() ?: continue
+            Log.d(TAG, "tryPassMd5: path = $path")
+            val baseUrl = fetchUrl.substringBefore("/d/")
+            val response = app.get(
+                "$baseUrl/pass_md5/$path",
+                headers = mapOf("Referer" to fetchUrl, "X-Requested-With" to "XMLHttpRequest")
+            ).text
+            Log.d(TAG, "tryPassMd5: response = ${response.take(120)}")
+            if (response.isNotBlank() && response.startsWith("http")) {
+                val token = path.substringAfterLast("/")
+                val suffix = (1..10).map { ALPHANUM.random() }.joinToString("")
+                val videoUrl = "$response$suffix?token=$token&expiry=${System.currentTimeMillis()}"
+                callback(newExtractorLink(name, "DoodStream", videoUrl, ExtractorLinkType.VIDEO) {
+                    referer = fetchUrl
+                    quality = Qualities.Unknown.value
+                })
+                return true
+            }
+        }
+        return false
+    }
+
+    private suspend fun tryHashHls(decoded: String?, html: String, fetchUrl: String, callback: (ExtractorLink) -> Unit) {
+        val hashMatch = Regex(""""hash"\s*:\s*"([a-f0-9]{32,})"""").find(html)
+        val fileId = fetchUrl.substringAfterLast("/d/").substringBefore("?")
+        if (hashMatch == null || fileId.isEmpty()) {
+            Log.w(TAG, "tryHashHls: no hash or fileId found")
+            return
+        }
+        val dirMatch = Regex("""/hls2/(\d{2})/(\d+)/""").find(decoded ?: html)
+        val dir1 = dirMatch?.groupValues?.getOrNull(1) ?: "03"
+        val dir2 = dirMatch?.groupValues?.getOrNull(2) ?: "00000"
+        val videoHash = "${fileId}_h"
+
+        for (cdn in CDN_DOMAINS) {
+            val hlsUrl = "https://$cdn/hls2/$dir1/$dir2/$videoHash/master.m3u8?e=28800&f=$fileId&i=0.3&sp=0"
+            Log.d(TAG, "tryHashHls: trying $hlsUrl")
+            try {
+                M3u8Helper.generateM3u8(name, hlsUrl, fetchUrl, headers = mapOf("Referer" to fetchUrl)).forEach(callback)
+                return
+            } catch (_: Exception) {}
+        }
+    }
+
+    private suspend fun emitVideoUrl(source: String, referer: String, label: String, callback: (ExtractorLink) -> Unit): Boolean {
+        Regex("""https?://[^"'\s]+\.m3u8[^"'\s]*""").find(source)?.let { match ->
+            val url = match.value.replace("\\/", "/")
+            Log.d(TAG, "emitVideoUrl [$label] m3u8 = ${url.take(150)}")
+            M3u8Helper.generateM3u8(name, url, referer, headers = mapOf("Referer" to referer)).forEach(callback)
+            return true
+        }
+        Regex("""https?://[^"'\s]+\.mp4[^"'\s]*""").find(source)?.let { match ->
+            val url = match.value.replace("\\/", "/")
+            Log.d(TAG, "emitVideoUrl [$label] mp4 = ${url.take(150)}")
+            callback(newExtractorLink(name, name, url, ExtractorLinkType.VIDEO) {
+                this.referer = referer
+                quality = Qualities.Unknown.value
+            })
+            return true
+        }
+        return false
+    }
+
+    // ---- Helpers ----
+
+    private fun extractIframes(document: org.jsoup.nodes.Document): List<String> {
+        return document.select("iframe").mapNotNull { iframe ->
+            iframe.attr("data-lazy-src").takeIf { it.isNotBlank() && it != "about:blank" }
+                ?: iframe.attr("src").takeIf { it.isNotBlank() && it != "about:blank" }
+        }
+    }
+
+    private fun String.decodePacker(): String? {
+        try {
+            val match = PACKER_REGEX.find(this) ?: return null
             val p = match.groupValues[1]
             val a = match.groupValues[2].toIntOrNull() ?: return null
             val c = match.groupValues[3].toIntOrNull() ?: return null
             val k = match.groupValues[4].split('|')
-            Log.d("BokepIndoh", "decodePackerScript: base=$a, count=$c, words=${k.size}")
+            Log.d(TAG, "decodePacker: base=$a, count=$c, words=${k.size}")
 
             var result = p
             for (i in (c - 1) downTo 0) {
                 if (i < k.size && k[i].isNotEmpty()) {
-                    val index = i.toString(a)
-                    result = result.replace(Regex("\\b${Regex.escape(index)}\\b"), k[i])
+                    result = result.replace(Regex("\\b${Regex.escape(i.toString(a))}\\b"), k[i])
                 }
             }
-            Log.d("BokepIndoh", "decodePackerScript: decoded length=${result.length}")
+            Log.d(TAG, "decodePacker: decoded length=${result.length}")
             return result
         } catch (e: Exception) {
-            Log.e("BokepIndoh", "decodePackerScript error: ${e.message}", e)
+            Log.e(TAG, "decodePacker error: ${e.message}", e)
             return null
         }
     }
 
-    private fun findPassMd5(scriptContent: String): String? {
-        val patterns = listOf(
-            Regex("""['"]\s*/pass_md5/([^'"]+)['"]"""),
-            Regex("""/pass_md5/([a-zA-Z0-9\-]+/[a-zA-Z0-9]+)"""),
-            Regex("""pass_md5['"]\s*:\s*['"]([^'"]+)['"]"""),
-            Regex("""['"](/pass_md5/[^'"]+)['"]"""),
-        )
-        for (pattern in patterns) {
-            val match = pattern.find(scriptContent)
-            if (match != null) {
+    private fun String.findPassMd5(): String? {
+        for (pattern in PASS_MD5_PATTERNS) {
+            pattern.find(this)?.let { match ->
                 val path = match.groupValues[1].removePrefix("/")
-                Log.d("BokepIndoh", "findPassMd5: matched pattern, path = $path")
+                Log.d(TAG, "findPassMd5: matched, path = $path")
                 return path
             }
         }
         return null
     }
 
-    private fun parseDurationISO(duration: String?): Int? {
-        if (duration.isNullOrBlank()) return null
-        val match = Regex("PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?").find(duration) ?: return null
+    private fun String.parseDurationISO(): Int? {
+        if (isBlank()) return null
+        val match = Regex("PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?").find(this) ?: return null
         val hours = match.groupValues[1].toIntOrNull() ?: 0
         val minutes = match.groupValues[2].toIntOrNull() ?: 0
         val seconds = match.groupValues[3].toIntOrNull() ?: 0
         return hours * 3600 + minutes * 60 + seconds
+    }
+
+    private fun String.isDoodLike(): Boolean = contains("playmogo") || contains("pendek") || contains("dood") ||
+        contains("luluvid") || contains("luluvdo") || contains("lulustream")
+
+    companion object {
+        private const val TAG = "BokepIndoh"
+        private const val ITEM_SELECTOR = "article.thumb-block, article.loop-video"
+        private const val ALPHANUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+        private val PACKER_REGEX = Regex(
+            """eval\(function\(p,a,c,k,e,d\)\{[^}]*\}\('(.+?)',(\d+),(\d+),'([^']*?)'\.split\('\|'\)""",
+            RegexOption.DOT_MATCHES_ALL
+        )
+        private val PASS_MD5_PATTERNS = listOf(
+            Regex("""['"]\s*/pass_md5/([^'"]+)['"]"""),
+            Regex("""/pass_md5/([a-zA-Z0-9\-]+/[a-zA-Z0-9]+)"""),
+            Regex("""pass_md5['"]\s*:\s*['"]([^'"]+)['"]"""),
+            Regex("""['"](/pass_md5/[^'"]+)['"]"""),
+        )
+        private val CDN_DOMAINS = listOf(
+            "DrMtUew6NHFm.tnmr.org",
+            "hw6ugf3856NN.tnmr.org",
+            "hw.jmnl.xyz",
+            "hw.cdnst1.xyz"
+        )
     }
 }
