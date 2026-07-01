@@ -105,6 +105,9 @@ class Bokep31Provider : MainAPI() {
 
     private suspend fun extractDoodLike(url: String, referer: String, callback: (ExtractorLink) -> Unit) {
         try {
+            // Special case: BigWarp — POST /dl, not doodstream flow
+            if (url.contains("bigwarp") && tryBigWarp(url, referer, callback)) return
+
             val embedUrl = url
             val directUrl = url.replace("/e/", "/d/")
             Log.d(TAG, "extractDoodLike: embed=$embedUrl direct=$directUrl")
@@ -126,6 +129,41 @@ class Bokep31Provider : MainAPI() {
             if (!url.containsDoodStream()) tryHashHls(decoded, directHtml, directUrl, callback)
         } catch (e: Exception) {
             Log.e(TAG, "extractDoodLike: ${e.message}", e)
+        }
+    }
+
+    private suspend fun tryBigWarp(url: String, referer: String, callback: (ExtractorLink) -> Unit): Boolean {
+        try {
+            val fileCode = if (url.contains("embed-"))
+                url.substringAfter("embed-").substringBefore(".html").substringBefore("?")
+            else
+                url.substringAfter("/e/").substringBefore("?")
+            if (fileCode.isBlank()) return false
+
+            val baseUrl = url.substringBefore("/e/").substringBefore("/embed-")
+            Log.d(TAG, "tryBigWarp: fileCode=$fileCode")
+
+            val html = app.post(
+                "$baseUrl/dl",
+                data = mapOf("op" to "embed", "file_code" to fileCode, "auto" to "1", "referer" to referer),
+                headers = mapOf("Referer" to url, "Content-Type" to "application/x-www-form-urlencoded")
+            ).text
+
+            var found = false
+            for (match in BIGWARP_MP4_REGEX.findAll(html)) {
+                val videoUrl = match.groupValues[1].replace("\\/", "/")
+                Log.d(TAG, "tryBigWarp: mp4 = ${videoUrl.take(120)}")
+                callback(newExtractorLink(name, "BigWarp", videoUrl, ExtractorLinkType.VIDEO) {
+                    this.referer = "$baseUrl/"
+                    quality = Qualities.Unknown.value
+                })
+                found = true
+            }
+            if (!found) Log.w(TAG, "tryBigWarp: no MP4 URLs found in response")
+            return found
+        } catch (e: Exception) {
+            Log.e(TAG, "tryBigWarp: ${e.message}", e)
+            return false
         }
     }
 
@@ -256,9 +294,9 @@ class Bokep31Provider : MainAPI() {
 
     private fun String.isDoodLike(): Boolean = contains("playmogo") || contains("pendek") || contains("dood") ||
         contains("luluvid") || contains("luluvdo") || contains("lulustream") ||
-        contains("myvidplay")
+        contains("myvidplay") || contains("bigwarp")
 
-    private fun String.containsDoodStream(): Boolean = contains("playmogo") || contains("myvidplay") || contains("dood")
+    private fun String.containsDoodStream(): Boolean = contains("playmogo") || contains("myvidplay") || contains("bigwarp") || contains("dood")
 
     companion object {
         private const val TAG = "Bokep31"
@@ -274,6 +312,7 @@ class Bokep31Provider : MainAPI() {
             Regex("""pass_md5['"]\s*:\s*['"]([^'"]+)['"]"""),
             Regex("""['"](/pass_md5/[^'"]+)['"]"""),
         )
+        private val BIGWARP_MP4_REGEX = Regex("""file:"(https?://[^"]+\.mp4[^"]*)"""")
         private val CDN_DOMAINS = listOf(
             "iihbzqjhkqull.tnmr.org",
             "DrMtUew6NHFm.tnmr.org",
