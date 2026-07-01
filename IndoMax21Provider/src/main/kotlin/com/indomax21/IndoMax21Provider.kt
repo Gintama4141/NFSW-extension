@@ -129,12 +129,36 @@ class IndoMax21Provider : MainAPI() {
 
     private suspend fun extractPyrox(iframeSrc: String, referer: String, callback: (ExtractorLink) -> Unit) {
         try {
-            val iframeId = iframeSrc.split("/").last().substringBefore("?")
+            val uid = iframeSrc.split("/").last().substringBefore("?")
+            if (uid.isBlank()) return
             val host = URI(iframeSrc).host
+            
+            // New method: fetch encrypted master.txt and decrypt
+            val masterUrl = "https://$host/m3/$uid/master.txt"
+            val encryptedHex = app.get(masterUrl, headers = mapOf(
+                "Referer" to iframeSrc,
+                "X-Requested-With" to "XMLHttpRequest"
+            )).text.trim()
+            
+            if (encryptedHex.isNotBlank() && encryptedHex.all { it.isDigit() || (it in 'a'..'f') || (it in 'A'..'F') }) {
+                val decrypted = decryptAesCbc(encryptedHex, PYROX_KEY, uid)
+                val videoUrl = decrypted.trim()
+                if (videoUrl.startsWith("http")) {
+                    val isM3u8 = videoUrl.contains(".m3u8", ignoreCase = true) || videoUrl.contains(".txt")
+                    callback(
+                        newExtractorLink(name, "Pyrox", videoUrl,
+                            if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        ) { this.referer = iframeSrc; this.quality = Qualities.Unknown.value }
+                    )
+                    return
+                }
+            }
+            
+            // Fallback to old method
             val response = app.post(
-                url = "https://$host/player/index.php?data=$iframeId&do=getVideo",
+                url = "https://$host/player/index.php?data=$uid&do=getVideo",
                 headers = mapOf("X-Requested-With" to "XMLHttpRequest", "Referer" to iframeSrc),
-                data = mapOf("hash" to iframeId, "r" to referer)
+                data = mapOf("hash" to uid, "r" to referer)
             ).text
 
             PYROX_URL_REGEX.findAll(response).forEach { match ->
@@ -147,6 +171,20 @@ class IndoMax21Provider : MainAPI() {
                 )
             }
         } catch (_: Exception) {}
+    }
+
+    private fun decryptAesCbc(hexString: String, key: ByteArray, uid: String): String {
+        try {
+            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+            val iv = ByteArray(16) { i ->
+                if (i < uid.length) uid[i].toInt().toByte() else 0.toByte()
+            }
+            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+            val decoded = hexString.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            return String(cipher.doFinal(decoded), Charsets.UTF_8)
+        } catch (_: Exception) {
+            return ""
+        }
     }
 
     private suspend fun extract4MePlayer(iframeSrc: String, callback: (ExtractorLink) -> Unit) {
@@ -237,6 +275,7 @@ class IndoMax21Provider : MainAPI() {
         private const val ITEM_SELECTOR = "#gmr-main-load article, .gmr-item-modulepost"
         private const val EPISODE_SELECTOR = ".gmr-listseries a, .gmr-eps-list a, .button-seasons a, ul.gmr-episodes li a"
         private const val SERVER_TAB_SELECTOR = ".muvipro-player-tabs a"
+        private val PYROX_KEY = "kiemtienmua911ca".toByteArray(Charsets.UTF_8)
         private val FOURME_KEY = "kiemtienmua911ca".toByteArray(Charsets.UTF_8)
         private val FOURME_IV = ByteArray(16) { i -> if (i < 9) i.toByte() else 32.toByte() }
         private val PYROX_URL_REGEX = Regex("""(https:\\?\/\\?\/[^"]+\.(?:m3u8|mp4|txt)[^"]*)""")
