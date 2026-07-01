@@ -255,6 +255,7 @@ class Bokep31Provider : MainAPI() {
             Regex("""['"](/pass_md5/[^'"]+)['"]"""),
         )
         private val CDN_DOMAINS = listOf(
+            "DrMtUew6NHFm.tnmr.org",
             "hw6ugf3856NN.tnmr.org",
             "hw.jmnl.xyz",
             "hw.cdnst1.xyz"
