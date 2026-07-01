@@ -255,9 +255,10 @@ class Bokep31Provider : MainAPI() {
     }
 
     private fun String.isDoodLike(): Boolean = contains("playmogo") || contains("pendek") || contains("dood") ||
-        contains("luluvid") || contains("luluvdo") || contains("lulustream")
+        contains("luluvid") || contains("luluvdo") || contains("lulustream") ||
+        contains("myvidplay")
 
-    private fun String.containsDoodStream(): Boolean = contains("playmogo") || contains("dood")
+    private fun String.containsDoodStream(): Boolean = contains("playmogo") || contains("myvidplay") || contains("dood")
 
     companion object {
         private const val TAG = "Bokep31"
