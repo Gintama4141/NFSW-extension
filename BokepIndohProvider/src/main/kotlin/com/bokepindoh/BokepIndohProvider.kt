@@ -238,7 +238,7 @@ class BokepIndohProvider : MainAPI() {
     }
 
     private fun String.isDoodLike(): Boolean = contains("playmogo") || contains("pendek") || contains("dood") ||
-        contains("luluvid") || contains("luluvdo") || contains("lulustream")
+        contains("luluvid") || contains("luluvdo") || contains("lulustream") || contains("bebasnonton")
 
     companion object {
         private const val TAG = "BokepIndoh"
