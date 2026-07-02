@@ -105,6 +105,9 @@ class KimcilOnlyProvider : MainAPI() {
                         fullUrl.contains("gupload") -> {
                             guploadExtractor.getUrl(fullUrl, data, subtitleCallback, callback)
                         }
+                        fullUrl.contains("streamcash") -> {
+                            extractStreamCash(fullUrl, data, callback)
+                        }
                         else -> {
                             loadExtractor(fullUrl, data, subtitleCallback, callback)
                             extractGeneric(fullUrl, data, callback)
@@ -177,11 +180,12 @@ class KimcilOnlyProvider : MainAPI() {
         when {
             link.contains("byse") -> byseExtractor.getUrl(link, referer, subtitleCallback, callback)
             link.contains("luluvid") || link.contains("luluvdo") || link.contains("lulustream") ||
-            link.contains("doods") || link.contains("playmogo") -> {
+            link.contains("doods") || link.contains("playmogo") || link.contains("firestream") -> {
                 extractDoodLike(link, referer, callback)
                 extractVidaraLike(link, referer, callback)
             }
             link.contains("pendek.my.id") -> extractPendekMyId(link, referer, callback)
+            link.contains("streamcash") -> extractStreamCash(link, referer, callback)
             else -> {
                 loadExtractor(link, referer, subtitleCallback, callback)
                 extractGeneric(link, referer, callback)
@@ -208,6 +212,22 @@ class KimcilOnlyProvider : MainAPI() {
         }
     }.onFailure { e ->
         Log.e(TAG, "extractGeneric error: ${e.message}", e)
+    }
+
+    private suspend fun extractStreamCash(
+        url: String,
+        referer: String,
+        callback: (ExtractorLink) -> Unit
+    ) = runCatching {
+        val code = url.substringAfter("/embed/").substringBefore("?")
+        if (code.isEmpty()) return@runCatching
+        val m3u8Url = "https://cdn.streamcash.to/videos/$code/index.m3u8"
+        M3u8Helper.generateM3u8(
+            "StreamCash", m3u8Url, "https://streamcash.to/",
+            headers = mapOf("Referer" to "https://streamcash.to/")
+        ).forEach(callback)
+    }.onFailure { e ->
+        Log.e(TAG, "extractStreamCash error: ${e.message}", e)
     }
 
     private suspend fun extractDoodLike(
