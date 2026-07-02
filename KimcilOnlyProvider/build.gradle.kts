@@ -1,4 +1,4 @@
-version = 13
+version = 14
 
 cloudstream {
     language = "id"
@@ -8,5 +8,5 @@ cloudstream {
     status = 1
     tvTypes = listOf("NSFW")
 
-    iconUrl = "https://kimcilonlyofc.my/wp-content/uploads/2021/08/cropped-entrepreneurship-2.png"
+    iconUrl = "https://tv.kimcilonly.de/wp-content/uploads/2021/08/cropped-entrepreneurship-2.png"
 }

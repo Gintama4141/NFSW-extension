@@ -21,7 +21,7 @@ import javax.crypto.spec.SecretKeySpec
 class KimcilOnlyProvider : MainAPI() {
 
     override var name = "KimcilOnly"
-    override var mainUrl = "https://kimcilonlyofc.my"
+    override var mainUrl = "https://tv.kimcilonly.de"
     override var lang = "id"
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
@@ -92,7 +92,7 @@ class KimcilOnlyProvider : MainAPI() {
                             byseExtractor.getUrl(fullUrl, data, subtitleCallback, callback)
                         }
                         fullUrl.contains("luluvid") || fullUrl.contains("luluvdo") || fullUrl.contains("lulustream") ||
-                        fullUrl.contains("playmogo") || fullUrl.contains("doods") -> {
+                        fullUrl.contains("playmogo") || fullUrl.contains("doods") || fullUrl.contains("firestream") -> {
                             extractDoodLike(fullUrl, data, callback)
                             extractVidaraLike(fullUrl, data, callback)
                         }
@@ -550,7 +550,7 @@ open class ByseSXLocal : ExtractorApi() {
         runCatching { URI(url).let { "${it.scheme}://${it.host}" } }.getOrDefault(url)
 
     private fun getCodeFromUrl(url: String): String =
-        runCatching { URI(url).path?.trimEnd('/')?.substringAfterLast('/') }.getOrNull() ?: ""
+        runCatching { URI(url).path?.substringAfter("/e/")?.substringBefore("/")?.trimEnd('/') }.getOrNull() ?: ""
 
     override suspend fun getUrl(
         url: String,
