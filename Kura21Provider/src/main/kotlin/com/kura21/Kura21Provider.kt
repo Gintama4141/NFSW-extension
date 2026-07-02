@@ -1,18 +1,28 @@
 package com.kura21
 
+import android.util.Base64
 import android.util.Log
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
+import com.lagradost.nicehttp.RequestBodyTypes
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.net.URI
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 class Kura21Provider : MainAPI() {
 
     override var name = "Kura21"
-    override var mainUrl = "https://kurakura21.net"
+    override var mainUrl = "https://kurakura21.com"
     override var lang = "id"
     override val hasMainPage = true
     override val supportedTypes = setOf(TvType.NSFW)
@@ -49,11 +59,28 @@ class Kura21Provider : MainAPI() {
             "hw.jmnl.xyz",
             "hw.cdnst1.xyz"
         )
-        private val DOOD_LIKE_DOMAINS = listOf("playmogo", "pendek", "dood", "luluvdo", "lulustream", "luluvid")
+        private val DOOD_LIKE_DOMAINS = listOf(
+            "playmogo", "pendek", "dood", "luluvdo", "lulustream", "luluvid",
+            "kr21.click", "kurakura21.space", "kr21.click", "turtle4up.top"
+        )
+        private val BYSE_DOMAINS = listOf("kr21.click", "byse")
+        private val TURTLE4UP_DOMAINS = listOf("turtle4up.top")
+        private val EM_TURBOVID_DOMAINS = listOf("emturbovid.com")
 
         private fun <T> Result<T>.ignoreCancellation(): Result<T> =
             onFailure { if (it is CancellationException) throw it }
+
+        private fun getBaseUrl(url: String): String =
+            runCatching { URI(url).let { "${it.scheme}://${it.host}" } }.getOrDefault(url)
+
+        private fun getCodeFromUrl(url: String): String =
+            runCatching { URI(url).path?.substringAfter("/e/")?.substringBefore("/")?.trimEnd('/') }.getOrNull() ?: ""
     }
+
+    // --- Extractor instances ---
+    private val byseExtractor by lazy { ByseSXLocal() }
+    private val turtle4upExtractor by lazy { Turtle4upExtractor() }
+    private val emturbovidExtractor by lazy { EmturbovidExtractor() }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse? {
         val url = if (page == 1) request.data else "${request.data}page/$page/"
@@ -199,6 +226,12 @@ class Kura21Provider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ) {
         when {
+            BYSE_DOMAINS.any { src.contains(it) } ->
+                byseExtractor.getUrl(src, referer, subtitleCallback, callback)
+            TURTLE4UP_DOMAINS.any { src.contains(it) } ->
+                turtle4upExtractor.getUrl(src, referer, subtitleCallback, callback)
+            EM_TURBOVID_DOMAINS.any { src.contains(it) } ->
+                emturbovidExtractor.getUrl(src, referer, subtitleCallback, callback)
             DOOD_LIKE_DOMAINS.any { src.contains(it) } ->
                 extractDoodLike(src, referer, callback)
             src.contains("terbit2") ->
@@ -367,4 +400,235 @@ class Kura21Provider : MainAPI() {
         }
         return null
     }
+
+    // ==================== ByseSXLocal Extractor ====================
+
+    private inner class ByseSXLocal : ExtractorApi() {
+        override var name = "Byse"
+        override var mainUrl = "https://byse.sx"
+        override val requiresReferer = true
+
+        private fun b64UrlDecode(s: String): ByteArray = runCatching {
+            val fixed = s.replace('-', '+').replace('_', '/')
+            val pad = when (fixed.length % 4) {
+                2 -> "=="
+                3 -> "="
+                else -> ""
+            }
+            Base64.decode(fixed + pad, Base64.DEFAULT)
+        }.getOrElse { ByteArray(0) }
+
+        private fun getBaseUrl(url: String): String =
+            runCatching { URI(url).let { "${it.scheme}://${it.host}" } }.getOrDefault(url)
+
+        private fun getCodeFromUrl(url: String): String =
+            runCatching { URI(url).path?.substringAfter("/e/")?.substringBefore("/")?.trimEnd('/') }.getOrNull() ?: ""
+
+        override suspend fun getUrl(
+            url: String,
+            referer: String?,
+            subtitleCallback: (SubtitleFile) -> Unit,
+            callback: (ExtractorLink) -> Unit
+        ) {
+            runCatching {
+                val refererUrl = getBaseUrl(url)
+                val code = getCodeFromUrl(url)
+                if (code.isEmpty()) return@runCatching
+
+                // Step 1: Get embed details
+                val detailsUrl = "$refererUrl/api/videos/$code/embed/details"
+                val details = tryParseJson<DetailsRoot>(app.get(detailsUrl).text) ?: return@runCatching
+
+                val embedFrameUrl = details.embedFrameUrl
+                val embedBase = getBaseUrl(embedFrameUrl)
+                val embedCode = runCatching { URI(embedFrameUrl).path?.substringAfter("/e/")?.substringBefore("/")?.trimEnd('/') }.getOrNull() ?: ""
+
+                // Step 2: Get playback data with proper headers
+                val playbackUrl = "$embedBase/api/videos/$embedCode/embed/playback"
+                val playbackHeaders = mapOf(
+                    "accept" to "*/*",
+                    "referer" to embedFrameUrl,
+                    "x-embed-parent" to (referer ?: mainUrl)
+                )
+
+                // Try GET first
+                var playback = tryParseJson<PlaybackRoot>(app.get(playbackUrl, headers = playbackHeaders).text)?.playback
+                if (playback == null) {
+                    // Try POST with empty JSON body
+                    playback = tryParseJson<PlaybackRoot>(
+                        app.post(
+                            playbackUrl,
+                            headers = playbackHeaders + mapOf("Content-Type" to "application/json"),
+                            requestBody = "{}".toRequestBody(RequestBodyTypes.JSON.toMediaTypeOrNull())
+                        ).text
+                    )?.playback
+                }
+
+                playback?.let { p ->
+                    val keyBytes = b64UrlDecode(p.keyParts[0]) + b64UrlDecode(p.keyParts[1])
+                    val ivBytes = b64UrlDecode(p.iv)
+                    val cipherBytes = b64UrlDecode(p.payload)
+
+                    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                    cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), GCMParameterSpec(128, ivBytes))
+                    val jsonStr = String(cipher.doFinal(cipherBytes), Charsets.UTF_8).removePrefix("\uFEFF")
+
+                    tryParseJson<PlaybackDecrypt>(jsonStr)?.sources?.firstOrNull()?.url?.let { streamUrl ->
+                        M3u8Helper.generateM3u8(name, streamUrl, refererUrl, headers = mapOf("Referer" to refererUrl))
+                            .forEach(callback)
+                    }
+                }
+            }.onFailure { e ->
+                Log.e(TAG, "ByseSXLocal getUrl error: ${e.message}", e)
+            }
+        }
+    }
+
+    // ==================== Turtle4up Extractor ====================
+
+    private inner class Turtle4upExtractor : ExtractorApi() {
+        override var name = "Turtle4up"
+        override var mainUrl = "https://turtle4up.top"
+        override val requiresReferer = true
+
+        override suspend fun getUrl(
+            url: String,
+            referer: String?,
+            subtitleCallback: (SubtitleFile) -> Unit,
+            callback: (ExtractorLink) -> Unit
+        ) {
+            // URL format: https://turtle4up.top/#{hash}
+            val hash = runCatching { URI(url).fragment }.getOrNull() ?: url.substringAfterLast("#")
+            if (hash.isEmpty()) return
+
+            runCatching {
+                val baseUrl = getBaseUrl(url)
+
+                // Try video info endpoint
+                val videoInfo = tryParseJson<VideoInfo>(app.get("$baseUrl/api/v1/video?id=$hash",
+                    headers = mapOf("Referer" to url)
+                ).text)
+
+                if (videoInfo != null && videoInfo.url.isNotEmpty()) {
+                    callback(newExtractorLink(name, "Turtle4up", videoInfo.url, ExtractorLinkType.VIDEO) {
+                        this.referer = url
+                        this.quality = Qualities.Unknown.value
+                    })
+                    return@runCatching
+                }
+
+                // Try info endpoint
+                val info = tryParseJson<InfoResponse>(app.get("$baseUrl/api/v1/info?id=$hash",
+                    headers = mapOf("Referer" to url)
+                ).text)
+
+                if (info != null && info.src.isNotEmpty()) {
+                    callback(newExtractorLink(name, "Turtle4up", info.src, ExtractorLinkType.VIDEO) {
+                        this.referer = url
+                        this.quality = Qualities.Unknown.value
+                    })
+                    return@runCatching
+                }
+
+                // Try player endpoint (requires valid token)
+                // Token might be derived from hash or obtained from page
+                val player = tryParseJson<PlayerResponse>(app.get("$baseUrl/api/v1/player?t=$hash",
+                    headers = mapOf("Referer" to url, "Origin" to baseUrl)
+                ).text)
+
+                if (player != null && player.url.isNotEmpty()) {
+                    callback(newExtractorLink(name, "Turtle4up", player.url, ExtractorLinkType.VIDEO) {
+                        this.referer = url
+                        this.quality = Qualities.Unknown.value
+                    })
+                    return@runCatching
+                }
+
+                // Fallback: try download endpoint
+                val download = tryParseJson<DownloadResponse>(app.get("$baseUrl/api/v1/download?id=$hash",
+                    headers = mapOf("Referer" to url)
+                ).text)
+
+                if (download != null && download.url.isNotEmpty()) {
+                    callback(newExtractorLink(name, "Turtle4up", download.url, ExtractorLinkType.VIDEO) {
+                        this.referer = url
+                        this.quality = Qualities.Unknown.value
+                    })
+                }
+            }.onFailure { e ->
+                Log.e(TAG, "Turtle4upExtractor error: ${e.message}", e)
+            }
+        }
+
+        private fun getBaseUrl(url: String): String =
+            runCatching { URI(url).let { "${it.scheme}://${it.host}" } }.getOrDefault(url)
+    }
+
+    // ==================== Emturbovid Extractor ====================
+
+    private inner class EmturbovidExtractor : ExtractorApi() {
+        override var name = "Emturbovid"
+        override var mainUrl = "https://emturbovid.com"
+        override val requiresReferer = true
+
+        override suspend fun getUrl(
+            url: String,
+            referer: String?,
+            subtitleCallback: (SubtitleFile) -> Unit,
+            callback: (ExtractorLink) -> Unit
+        ) {
+            // URL format: https://emturbovid.com/t/{id}
+            runCatching {
+                val baseUrl = getBaseUrl(url)
+                val id = runCatching { URI(url).path?.substringAfter("/t/") }.getOrNull() ?: url.substringAfterLast("/")
+
+                // Try to get video page and extract m3u8/mp4
+                val html = app.get(url, referer = referer).text
+
+                // Look for m3u8 or mp4 in page
+                HLS_URL_REGEX.findAll(html).forEach { match ->
+                    val videoUrl = match.value.replace("\\/", "/")
+                    M3u8Helper.generateM3u8(name, videoUrl, url, headers = mapOf("Referer" to url)).forEach(callback)
+                }
+
+                MP4_URL_REGEX.findAll(html).forEach { match ->
+                    val videoUrl = match.groupValues[1].replace("\\/", "/")
+                    callback(newExtractorLink(name, "Emturbovid", videoUrl, ExtractorLinkType.VIDEO) {
+                        this.referer = url
+                        this.quality = Qualities.Unknown.value
+                    })
+                }
+
+                // Try to find iframe src
+                val iframeMatch = Regex("""<iframe[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(html)
+                iframeMatch?.groupValues?.get(1)?.let { iframeSrc ->
+                    val fixed = fixUrl(iframeSrc)
+                    loadExtractor(fixed, url, {}, callback)
+                    extractGeneric(fixed, url, callback)
+                }
+            }.onFailure { e ->
+                Log.e(TAG, "EmturbovidExtractor error: ${e.message}", e)
+            }
+        }
+
+        private fun getBaseUrl(url: String): String =
+            runCatching { URI(url).let { "${it.scheme}://${it.host}" } }.getOrDefault(url)
+    }
+
+    // ==================== DTOs ====================
+
+    data class DetailsRoot(@JsonProperty("embed_frame_url") val embedFrameUrl: String)
+    data class PlaybackRoot(@JsonProperty("playback") val playback: Playback?)
+    data class Playback(
+        @JsonProperty("iv") val iv: String,
+        @JsonProperty("payload") val payload: String,
+        @JsonProperty("key_parts") val keyParts: List<String>
+    )
+    data class PlaybackDecrypt(@JsonProperty("sources") val sources: List<PlaybackDecryptSource>)
+    data class PlaybackDecryptSource(@JsonProperty("url") val url: String)
+
+    data class VideoInfo(@JsonProperty("url") val url: String)
+    data class InfoResponse(@JsonProperty("src") val src: String)
+    data class PlayerResponse(@JsonProperty("url") val url: String)
+    data class DownloadResponse(@JsonProperty("url") val url: String)
 }
