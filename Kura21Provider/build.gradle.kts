@@ -1,4 +1,4 @@
-version = 5
+version = 6
 
 cloudstream {
     language = "id"
@@ -8,5 +8,5 @@ cloudstream {
     status = 1
     tvTypes = listOf("NSFW")
 
-    iconUrl = "https://kurakura21.net/favicon.ico"
+    iconUrl = "https://kurakura21.com/favicon.ico"
 }
