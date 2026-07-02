@@ -139,10 +139,12 @@ class JavHeyProvider : MainAPI() {
             async(Dispatchers.IO) {
                 runCatching {
                     when {
-                        url.contains("streamwish.to") || url.contains("minochinos.com") || url.contains("terbit2.com") -> {
+                        url.contains("streamwish.to") || url.contains("minochinos.com") || url.contains("terbit2.com") || url.contains("swdyu.com") || url.contains("hgplaycdn.com") -> {
                             val fixed = url
                                 .replace("minochinos.com", "streamwish.to")
                                 .replace("terbit2.com", "streamwish.to")
+                                .replace("swdyu.com", "streamwish.to")
+                                .replace("hgplaycdn.com", "streamwish.to")
                             loadExtractor(fixed, data, subtitleCallback, callback)
                         }
                         url.contains("byse") -> byseExtractor.getUrl(url, data, subtitleCallback, callback)
