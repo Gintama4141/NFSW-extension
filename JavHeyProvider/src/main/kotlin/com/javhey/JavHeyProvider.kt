@@ -14,7 +14,23 @@ import java.net.URI
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import android.util.Log
+
+// ── Shared Helpers ──────────────────────────────────────────────
+
+private fun b64UrlDecode(s: String): ByteArray {
+    val fixed = s.replace('-', '+').replace('_', '/')
+    val pad = when (fixed.length % 4) {
+        2 -> "=="
+        3 -> "="
+        else -> ""
+    }
+    return runCatching { Base64.decode(fixed + pad, Base64.DEFAULT) }.getOrElse { ByteArray(0) }
+}
+
+private fun getBaseUrl(url: String): String =
+    runCatching { URI(url).let { "${it.scheme}://${it.host}" } }.getOrDefault(url)
+
+// ── Main Provider ───────────────────────────────────────────────
 
 class JavHeyProvider : MainAPI() {
     override var mainUrl = "https://javhey.com"
@@ -43,7 +59,8 @@ class JavHeyProvider : MainAPI() {
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page == 1) request.data.removeSuffix("/page=") else "${request.data}$page"
+        val base = request.data.removeSuffix("/page=")
+        val url = if (page > 1) "$base/page=$page" else base
         val document = app.get(url, headers = headers).document
 
         val home = document.select("div.article_standard_view > article.item").mapNotNull { it.toSearchResult() }
@@ -51,10 +68,8 @@ class JavHeyProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/search?s=$query"
         val searchHeaders = headers + mapOf("Referer" to "$mainUrl/")
-        val document = app.get(url, headers = searchHeaders).document
-
+        val document = app.get("$mainUrl/search?s=$query", headers = searchHeaders).document
         return document.select("div.article_standard_view > article.item").mapNotNull { it.toSearchResult() }
     }
 
@@ -112,82 +127,62 @@ class JavHeyProvider : MainAPI() {
         val rawLinks = document.select("[id=links]").mapNotNull {
             it.attr("value").takeIf { v -> v.isNotBlank() }
         }.flatMap { encodedValue ->
-            try {
+            runCatching {
                 String(Base64.decode(encodedValue, Base64.DEFAULT))
                     .split(",,,")
                     .map { it.trim() }
                     .filter { it.startsWith("http") }
-            } catch (_: Exception) {
-                emptyList()
-            }
+            }.getOrDefault(emptyList())
         }.toSet()
 
         rawLinks.map { url ->
             async(Dispatchers.IO) {
-                try {
+                runCatching {
                     when {
                         url.contains("streamwish.to") || url.contains("minochinos.com") || url.contains("terbit2.com") -> {
-                            val fixedUrl = url
+                            val fixed = url
                                 .replace("minochinos.com", "streamwish.to")
                                 .replace("terbit2.com", "streamwish.to")
-                            loadExtractor(fixedUrl, data, subtitleCallback, callback)
+                            loadExtractor(fixed, data, subtitleCallback, callback)
                         }
-                        url.contains("byse") -> {
-                            byseExtractor.getUrl(url, data, subtitleCallback, callback)
-                        }
-                        url.contains("gupload") -> {
-                            guploadExtractor.getUrl(url, data, subtitleCallback, callback)
-                        }
-                        else -> {
-                            loadExtractor(url, data, subtitleCallback, callback)
-                        }
+                        url.contains("byse") -> byseExtractor.getUrl(url, data, subtitleCallback, callback)
+                        url.contains("gupload") -> guploadExtractor.getUrl(url, data, subtitleCallback, callback)
+                        else -> loadExtractor(url, data, subtitleCallback, callback)
                     }
-                } catch (_: Exception) {}
+                }
             }
         }.awaitAll()
 
-        return@coroutineScope true
+        true
     }
 }
+
+// ── Byse Extractor ──────────────────────────────────────────────
 
 open class ByseSXLocal : ExtractorApi() {
     override var name = "Byse"
     override var mainUrl = "https://byse.sx"
     override val requiresReferer = true
 
-    private fun b64UrlDecode(s: String): ByteArray {
-        return try {
-            val fixed = s.replace('-', '+').replace('_', '/')
-            val pad = when (fixed.length % 4) {
-                2 -> "=="
-                3 -> "="
-                else -> ""
-            }
-            Base64.decode(fixed + pad, Base64.DEFAULT)
-        } catch (_: Exception) {
-            ByteArray(0)
-        }
-    }
+    private fun getCodeFromUrl(url: String): String =
+        runCatching { URI(url).path?.trimEnd('/')?.substringAfterLast('/') }.getOrNull() ?: ""
 
-    private fun getBaseUrl(url: String): String {
-        return runCatching { URI(url).let { "${it.scheme}://${it.host}" } }.getOrDefault(url)
-    }
-
-    private fun getCodeFromUrl(url: String): String {
-        return runCatching { URI(url).path?.trimEnd('/')?.substringAfterLast('/') }.getOrNull() ?: ""
-    }
-
-    override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
-        val refererUrl = getBaseUrl(url)
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
         val code = getCodeFromUrl(url)
         if (code.isEmpty()) return
+        val refererUrl = getBaseUrl(url)
 
         val detailsUrl = "$refererUrl/api/videos/$code/embed/details"
-        val details = app.get(detailsUrl).parsedSafe<DetailsRoot>() ?: return
+        val details = tryParseJson<DetailsRoot>(app.get(detailsUrl).text) ?: return
 
         val embedFrameUrl = details.embedFrameUrl
-        val embedBase = getBaseUrl(embedFrameUrl)
         val embedCode = getCodeFromUrl(embedFrameUrl)
+        val embedBase = getBaseUrl(embedFrameUrl)
 
         val playbackUrl = "$embedBase/api/videos/$embedCode/embed/playback"
         val playbackHeaders = mapOf(
@@ -196,10 +191,13 @@ open class ByseSXLocal : ExtractorApi() {
             "x-embed-parent" to (referer ?: mainUrl)
         )
 
-        val playback = app.get(playbackUrl, headers = playbackHeaders).parsedSafe<PlaybackRoot>()?.playback ?: return
+        val playback = tryParseJson<PlaybackRoot>(app.get(playbackUrl, headers = playbackHeaders).text)
+            ?.playback ?: return
 
-        try {
-            val keyBytes = b64UrlDecode(playback.keyParts[0]) + b64UrlDecode(playback.keyParts[1])
+        runCatching {
+            val keyParts = playback.keyParts
+            if (keyParts.size < 2) return@runCatching
+            val keyBytes = b64UrlDecode(keyParts[0]) + b64UrlDecode(keyParts[1])
             val ivBytes = b64UrlDecode(playback.iv)
             val cipherBytes = b64UrlDecode(playback.payload)
 
@@ -209,67 +207,42 @@ open class ByseSXLocal : ExtractorApi() {
             val jsonStr = String(cipher.doFinal(cipherBytes), Charsets.UTF_8).removePrefix("\uFEFF")
 
             tryParseJson<PlaybackDecrypt>(jsonStr)?.sources?.firstOrNull()?.url?.let { streamUrl ->
-                M3u8Helper.generateM3u8(name, streamUrl, refererUrl, headers = mapOf("Referer" to refererUrl)).forEach(callback)
+                M3u8Helper.generateM3u8(name, streamUrl, refererUrl, headers = mapOf("Referer" to refererUrl))
+                    .forEach(callback)
             }
-        } catch (_: Exception) {}
+        }
     }
 }
 
-data class DetailsRoot(@JsonProperty("embed_frame_url") val embedFrameUrl: String)
-data class PlaybackRoot(@JsonProperty("playback") val playback: Playback)
-data class Playback(@JsonProperty("iv") val iv: String, @JsonProperty("payload") val payload: String, @JsonProperty("key_parts") val keyParts: List<String>)
-data class PlaybackDecrypt(@JsonProperty("sources") val sources: List<PlaybackDecryptSource>)
-data class PlaybackDecryptSource(@JsonProperty("url") val url: String)
+// ── GUpload Extractor ───────────────────────────────────────────
 
 open class GUploadExtractor : ExtractorApi() {
     override var name = "GUpload"
     override var mainUrl = "https://gupload.xyz"
     override val requiresReferer = true
 
-    private fun b64UrlDecode(s: String): ByteArray {
-        return try {
-            val fixed = s.replace('-', '+').replace('_', '/')
-            val pad = when (fixed.length % 4) {
-                2 -> "=="
-                3 -> "="
-                else -> ""
-            }
-            Base64.decode(fixed + pad, Base64.DEFAULT)
-        } catch (_: Exception) {
-            ByteArray(0)
-        }
-    }
-
     private fun xorDecode(data: String, key: String): String {
-        val result = StringBuilder()
+        val result = StringBuilder(data.length)
         for (i in data.indices) {
-            val d = data[i].code
-            val k = key[i % key.length].code
-            result.append((d xor k).toChar())
+            result.append((data[i].code xor key[i % key.length].code).toChar())
         }
         return result.toString()
     }
 
-    override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
-        try {
-            android.util.Log.d("GUploadExtractor", "getUrl: url=$url")
+    override suspend fun getUrl(
+        url: String,
+        referer: String?,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        runCatching {
             val baseUrl = getBaseUrl(url)
             val pathParts = url.removePrefix(baseUrl).removePrefix("/").split("/")
-            android.util.Log.d("GUploadExtractor", "getUrl: pathParts=$pathParts")
-            if (pathParts.size < 2) {
-                android.util.Log.w("GUploadExtractor", "getUrl: pathParts too short, returning")
-                return
-            }
+            if (pathParts.size < 2) return@runCatching
             val code = pathParts.last()
-            android.util.Log.d("GUploadExtractor", "getUrl: code=$code")
 
-            val embedUrl = "$baseUrl/data/e/$code"
-            android.util.Log.d("GUploadExtractor", "getUrl: fetching embed $embedUrl")
-            val document = app.get(embedUrl, referer = url).document
-
+            val document = app.get("$baseUrl/data/e/$code", referer = url).document
             val fullHtml = document.html()
-            android.util.Log.d("GUploadExtractor", "getUrl: page html length=${fullHtml.length}")
-            android.util.Log.d("GUploadExtractor", "getUrl: html preview=${fullHtml.take(500)}")
 
             val oldPattern = Regex("c50b1777~[A-Za-z0-9+/=]+")
             val oldMatch = oldPattern.find(fullHtml)
@@ -277,40 +250,32 @@ open class GUploadExtractor : ExtractorApi() {
             val dpPattern = Regex("""_dp\(['"]([A-Za-z0-9+/=~]+)['"]""")
             val dpMatches = dpPattern.findAll(fullHtml).toList()
 
-            android.util.Log.d("GUploadExtractor", "getUrl: old pattern found=${oldMatch != null}, dp patterns found=${dpMatches.size}")
-
-            if (oldMatch != null) {
-                val obfuscated = oldMatch.value.removePrefix("c50b1777~")
-                val decoded = xorDecode(obfuscated, "G7#kP!2qZxV9mRwL")
-                val playerUrl = String(b64UrlDecode(decoded))
-                android.util.Log.d("GUploadExtractor", "getUrl: [old] playerUrl=$playerUrl")
-                fetchAndExtractPlayer(playerUrl, url, baseUrl, callback)
-            } else if (dpMatches.isNotEmpty()) {
-                for (dpMatch in dpMatches) {
-                    val obfuscated = dpMatch.groupValues[1]
+            when {
+                oldMatch != null -> {
+                    val obfuscated = oldMatch.value.removePrefix("c50b1777~")
                     val decoded = xorDecode(obfuscated, "G7#kP!2qZxV9mRwL")
-                    val decodedStr = String(b64UrlDecode(decoded))
-                    android.util.Log.d("GUploadExtractor", "getUrl: [dp] decoded=$decodedStr")
-                    if (decodedStr.startsWith("http")) {
-                        android.util.Log.d("GUploadExtractor", "getUrl: [dp] found valid URL: $decodedStr")
-                        fetchAndExtractPlayer(decodedStr, url, baseUrl, callback)
-                        return
+                    fetchAndExtractPlayer(String(b64UrlDecode(decoded)), url, baseUrl, callback)
+                }
+                dpMatches.isNotEmpty() -> {
+                    for (dpMatch in dpMatches) {
+                        val decodedStr = String(b64UrlDecode(xorDecode(dpMatch.groupValues[1], "G7#kP!2qZxV9mRwL")))
+                        if (decodedStr.startsWith("http")) {
+                            fetchAndExtractPlayer(decodedStr, url, baseUrl, callback)
+                            return@runCatching
+                        }
                     }
                 }
             }
 
-            val pageUrlPatterns = Regex("""https?://[^"'\s]+\.(m3u8|mp4)[^"'\s]*""")
-            val pageMatches = pageUrlPatterns.findAll(fullHtml).toList()
-            android.util.Log.d("GUploadExtractor", "getUrl: found ${pageMatches.size} direct m3u8/mp4 matches in page")
+            val pageUrlPattern = Regex("""https?://[^"'\s]+\.(m3u8|mp4)[^"'\s]*""")
+            val pageMatches = pageUrlPattern.findAll(fullHtml).toList()
 
             for (m in pageMatches) {
                 val videoUrl = m.value.replace("\\/", "/")
                 if (videoUrl.contains(".m3u8")) {
-                    android.util.Log.d("GUploadExtractor", "getUrl: [page] m3u8=$videoUrl")
                     M3u8Helper.generateM3u8(name, videoUrl, baseUrl).forEach(callback)
                 } else {
-                    android.util.Log.d("GUploadExtractor", "getUrl: [page] mp4=$videoUrl")
-                    callback.invoke(newExtractorLink(name, "GUpload", videoUrl, ExtractorLinkType.VIDEO) {
+                    callback(newExtractorLink(name, "GUpload", videoUrl, ExtractorLinkType.VIDEO) {
                         this.referer = url
                         this.quality = Qualities.Unknown.value
                     })
@@ -318,19 +283,12 @@ open class GUploadExtractor : ExtractorApi() {
             }
 
             if (oldMatch == null && dpMatches.isEmpty() && pageMatches.isEmpty()) {
-                android.util.Log.d("GUploadExtractor", "getUrl: no patterns found, trying hls fallback")
-                val thumbnailUrl = Regex("""https?://gupload\.xyz/data/e/hls/[^"'\s]*/thumb/[^"'\s]+\.jpg""").find(fullHtml)?.value
-                if (thumbnailUrl != null) {
-                    val hlsUrl = thumbnailUrl.replace("/thumb/", "/master.m3u8")
-                    android.util.Log.d("GUploadExtractor", "getUrl: hls fallback=$hlsUrl")
-                    M3u8Helper.generateM3u8(name, hlsUrl, baseUrl).forEach(callback)
-                } else {
-                    android.util.Log.w("GUploadExtractor", "getUrl: no video URLs found at all")
-                    android.util.Log.d("GUploadExtractor", "getUrl: full html=$fullHtml")
+                val thumbMatch = Regex("""https?://gupload\.xyz/data/e/hls/[^"'\s]*/thumb/[^"'\s]+\.jpg""").find(fullHtml)
+                if (thumbMatch != null) {
+                    M3u8Helper.generateM3u8(name, thumbMatch.value.replace("/thumb/", "/master.m3u8"), baseUrl)
+                        .forEach(callback)
                 }
             }
-        } catch (e: Exception) {
-            android.util.Log.e("GUploadExtractor", "getUrl error: ${e.message}", e)
         }
     }
 
@@ -340,35 +298,27 @@ open class GUploadExtractor : ExtractorApi() {
         baseUrl: String,
         callback: (ExtractorLink) -> Unit
     ) {
-        android.util.Log.d("GUploadExtractor", "fetchAndExtractPlayer: fetching $playerUrl")
-        val playerDocument = app.get(playerUrl).document
-        val playerHtml = playerDocument.html()
-        android.util.Log.d("GUploadExtractor", "fetchAndExtractPlayer: player html length=${playerHtml.length}")
+        val playerHtml = app.get(playerUrl).document.html()
+        val pattern = Regex("""https?://[^"'\s]+\.(m3u8|mp4)[^"'\s]*""")
 
-        val m3u8Pattern = Regex("""https?://[^"'\s]+\.(m3u8|mp4)[^"'\s]*""")
-        val matches = m3u8Pattern.findAll(playerHtml).toList()
-        android.util.Log.d("GUploadExtractor", "fetchAndExtractPlayer: found ${matches.size} m3u8/mp4 matches")
-
-        for (m in matches) {
+        for (m in pattern.findAll(playerHtml)) {
             val videoUrl = m.value.replace("\\/", "/")
             if (videoUrl.contains(".m3u8")) {
-                android.util.Log.d("GUploadExtractor", "fetchAndExtractPlayer: m3u8=$videoUrl")
                 M3u8Helper.generateM3u8(name, videoUrl, baseUrl).forEach(callback)
             } else {
-                android.util.Log.d("GUploadExtractor", "fetchAndExtractPlayer: mp4=$videoUrl")
-                callback.invoke(newExtractorLink(name, "GUpload", videoUrl, ExtractorLinkType.VIDEO) {
+                callback(newExtractorLink(name, "GUpload", videoUrl, ExtractorLinkType.VIDEO) {
                     this.referer = refererUrl
                     this.quality = Qualities.Unknown.value
                 })
             }
         }
-
-        if (matches.isEmpty()) {
-            android.util.Log.w("GUploadExtractor", "fetchAndExtractPlayer: no m3u8/mp4 found in player page")
-            android.util.Log.d("GUploadExtractor", "fetchAndExtractPlayer: player preview=${playerHtml.take(500)}")
-        }
     }
-
-    private fun getBaseUrl(url: String): String =
-        runCatching { URI(url).let { "${it.scheme}://${it.host}" } }.getOrDefault(url)
 }
+
+// ── DTOs ────────────────────────────────────────────────────────
+
+data class DetailsRoot(@JsonProperty("embed_frame_url") val embedFrameUrl: String)
+data class PlaybackRoot(@JsonProperty("playback") val playback: Playback)
+data class Playback(@JsonProperty("iv") val iv: String, @JsonProperty("payload") val payload: String, @JsonProperty("key_parts") val keyParts: List<String>)
+data class PlaybackDecrypt(@JsonProperty("sources") val sources: List<PlaybackDecryptSource>)
+data class PlaybackDecryptSource(@JsonProperty("url") val url: String)
