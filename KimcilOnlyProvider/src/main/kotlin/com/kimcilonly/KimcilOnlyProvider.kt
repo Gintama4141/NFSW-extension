@@ -91,15 +91,13 @@ class KimcilOnlyProvider : MainAPI() {
                         fullUrl.contains("byse") -> {
                             byseExtractor.getUrl(fullUrl, data, subtitleCallback, callback)
                         }
-                        fullUrl.contains("playmogo") -> {
+                        fullUrl.contains("luluvid") || fullUrl.contains("luluvdo") || fullUrl.contains("lulustream") ||
+                        fullUrl.contains("playmogo") || fullUrl.contains("doods") -> {
                             extractDoodLike(fullUrl, data, callback)
+                            extractVidaraLike(fullUrl, data, callback)
                         }
                         fullUrl.contains("pendek.my.id") -> {
                             extractPendekMyId(fullUrl, data, callback)
-                        }
-                        fullUrl.contains("doods") -> {
-                            extractDoodLike(fullUrl, data, callback)
-                            extractVidaraLike(fullUrl, data, callback)
                         }
                         fullUrl.contains("pecah") -> {
                             extractPecahLike(fullUrl, data, subtitleCallback, callback)
@@ -178,11 +176,11 @@ class KimcilOnlyProvider : MainAPI() {
 
         when {
             link.contains("byse") -> byseExtractor.getUrl(link, referer, subtitleCallback, callback)
-            link.contains("doods") -> {
+            link.contains("luluvid") || link.contains("luluvdo") || link.contains("lulustream") ||
+            link.contains("doods") || link.contains("playmogo") -> {
                 extractDoodLike(link, referer, callback)
                 extractVidaraLike(link, referer, callback)
             }
-            link.contains("playmogo") -> extractDoodLike(link, referer, callback)
             link.contains("pendek.my.id") -> extractPendekMyId(link, referer, callback)
             else -> {
                 loadExtractor(link, referer, subtitleCallback, callback)
@@ -217,48 +215,35 @@ class KimcilOnlyProvider : MainAPI() {
         referer: String,
         callback: (ExtractorLink) -> Unit
     ) = runCatching {
-        val document = app.get(url, referer = referer).document
-        val scripts = document.select("script")
+        val embedUrl = url
+        val directUrl = url.replace("/e/", "/d/")
 
-        for (script in scripts) {
-            val scriptContent = script.html()
+        // Strategy 1: packer decode from /d/ page (LuluVid/JWPlayer)
+        val directDoc = app.get(directUrl, referer = referer).document
+        val directHtml = directDoc.html()
+        val decoded = directHtml.decodePacker()
+        if (decoded != null && emitVideoUrl(decoded, directUrl, "Packer", callback)) return@runCatching
 
-            val passMd5Path = findPassMd5(scriptContent)
-            if (passMd5Path != null) {
-                val baseUrl = url.substringBefore("/e/").substringBefore("/d/")
-                val response = app.get(
-                    "$baseUrl/pass_md5/$passMd5Path",
-                    headers = mapOf("Referer" to url, "X-Requested-With" to "XMLHttpRequest")
-                ).text
-                if (response.isNotBlank() && response.startsWith("http")) {
-                    val token = passMd5Path.substringAfterLast("/")
-                    val videoUrl = "$response${randomSuffix()}?token=$token&expiry=${System.currentTimeMillis()}"
-                    callback.invoke(
-                        newExtractorLink(name, "DoodStream", videoUrl, ExtractorLinkType.VIDEO) {
-                            this.referer = url
-                            this.quality = Qualities.Unknown.value
-                        }
-                    )
-                    return@runCatching
-                }
-                continue
-            }
+        // Strategy 2: pass_md5 from /e/ page (DoodStream/PlayMogo)
+        val embedDoc = app.get(embedUrl, referer = referer).document
+        if (tryPassMd5(embedDoc, embedUrl, callback)) return@runCatching
 
-            val doodMatch = DOOD_WATCH_REGEX.find(scriptContent)
+        // Strategy 3: dood?op=watch from /e/ scripts
+        for (script in embedDoc.select("script")) {
+            val doodMatch = DOOD_WATCH_REGEX.find(script.html())
             if (doodMatch != null) {
                 val hash = doodMatch.groupValues[1]
                 val token = doodMatch.groupValues[2]
-                val baseUrl = url.substringBefore("/e/")
-                val watchUrl = "$baseUrl/dood?op=watch&hash=$hash&token=$token&embed=true"
+                val baseUrl = embedUrl.substringBefore("/e/")
                 val response = app.get(
-                    watchUrl,
-                    headers = mapOf("Referer" to url, "X-Requested-With" to "XMLHttpRequest")
+                    "$baseUrl/dood?op=watch&hash=$hash&token=$token&embed=true",
+                    headers = mapOf("Referer" to embedUrl, "X-Requested-With" to "XMLHttpRequest")
                 ).text
                 if (response.isNotBlank() && response.startsWith("http")) {
                     val videoUrl = "$response${randomSuffix()}?token=$token&expiry=${System.currentTimeMillis()}"
                     callback.invoke(
                         newExtractorLink(name, "DoodStream", videoUrl, ExtractorLinkType.VIDEO) {
-                            this.referer = url
+                            this.referer = embedUrl
                             this.quality = Qualities.Unknown.value
                         }
                     )
@@ -267,29 +252,111 @@ class KimcilOnlyProvider : MainAPI() {
             }
         }
 
-        val pageHtml = document.html()
-        val mp4Match = DOOD_MP4_REGEX.find(pageHtml)
+        // Strategy 4: direct URL in /d/ HTML
+        if (emitVideoUrl(directHtml, directUrl, "Direct", callback)) return@runCatching
+
+        // Strategy 5: direct MP4 regex in /e/ HTML
+        val mp4Match = DOOD_MP4_REGEX.find(embedDoc.html())
         if (mp4Match != null) {
             val videoUrl = mp4Match.groupValues[1].replace("\\/", "/")
             callback.invoke(
                 newExtractorLink(name, name, videoUrl, ExtractorLinkType.VIDEO) {
-                    this.referer = url
+                    this.referer = embedUrl
                     this.quality = Qualities.Unknown.value
                 }
             )
+            return@runCatching
         }
+
+        // Strategy 6: hash HLS fallback — skip for pure DoodStream (serves MP4, not HLS)
+        if (!url.containsDoodStream()) tryHashHls(decoded, directHtml, directUrl, callback)
     }.onFailure { e ->
         Log.e(TAG, "extractDoodLike error: ${e.message}", e)
     }
 
-    private fun findPassMd5(scriptContent: String): String? {
+    private suspend fun tryPassMd5(doc: org.jsoup.nodes.Document, embedUrl: String, callback: (ExtractorLink) -> Unit): Boolean {
+        for (script in doc.select("script")) {
+            val path = script.html().findPassMd5() ?: continue
+            val baseUrl = embedUrl.substringBefore("/e/")
+            val response = app.get(
+                "$baseUrl/pass_md5/$path",
+                headers = mapOf("Referer" to embedUrl, "X-Requested-With" to "XMLHttpRequest")
+            ).text
+            if (response == "RELOAD") return false
+            if (response.isNotBlank() && response.startsWith("http")) {
+                val token = path.substringAfterLast("/")
+                val videoUrl = "$response${randomSuffix()}?token=$token&expiry=${System.currentTimeMillis()}"
+                callback.invoke(
+                    newExtractorLink(name, "DoodStream", videoUrl, ExtractorLinkType.VIDEO) {
+                        this.referer = embedUrl
+                        this.quality = Qualities.Unknown.value
+                    }
+                )
+                return true
+            }
+        }
+        return false
+    }
+
+    private suspend fun tryHashHls(decoded: String?, html: String, fetchUrl: String, callback: (ExtractorLink) -> Unit) {
+        val hashMatch = Regex(""""hash"\s*:\s*"([a-f0-9]{32,})"""").find(html)
+        val fileId = fetchUrl.substringAfterLast("/d/").substringBefore("?")
+        if (hashMatch == null || fileId.isEmpty()) return
+        val dirMatch = Regex("""/hls2/(\d{2})/(\d+)/""").find(decoded ?: html)
+        val dir1 = dirMatch?.groupValues?.getOrNull(1) ?: "03"
+        val dir2 = dirMatch?.groupValues?.getOrNull(2) ?: "00000"
+        val videoHash = "${fileId}_h"
+        for (cdn in CDN_DOMAINS) {
+            val hlsUrl = "https://$cdn/hls2/$dir1/$dir2/$videoHash/master.m3u8?e=28800&f=$fileId&i=0.3&sp=0"
+            runCatching {
+                M3u8Helper.generateM3u8(name, hlsUrl, fetchUrl, headers = mapOf("Referer" to fetchUrl)).forEach(callback)
+            }.onSuccess { return }
+        }
+    }
+
+    private suspend fun emitVideoUrl(source: String, referer: String, label: String, callback: (ExtractorLink) -> Unit): Boolean {
+        Regex("""https?://[^"'\s]+\.m3u8[^"'\s]*""").find(source)?.let { match ->
+            val url = match.value.replace("\\/", "/")
+            M3u8Helper.generateM3u8(name, url, referer, headers = mapOf("Referer" to referer)).forEach(callback)
+            return true
+        }
+        Regex("""https?://[^"'\s]+\.mp4[^"'\s]*""").find(source)?.let { match ->
+            val url = match.value.replace("\\/", "/")
+            callback.invoke(newExtractorLink(name, name, url, ExtractorLinkType.VIDEO) {
+                this.referer = referer
+                this.quality = Qualities.Unknown.value
+            })
+            return true
+        }
+        return false
+    }
+
+    private fun String.decodePacker(): String? = runCatching {
+        val match = PACKER_REGEX.find(this) ?: return@runCatching null
+        val p = match.groupValues[1]
+        val a = match.groupValues[2].toIntOrNull() ?: return@runCatching null
+        val c = match.groupValues[3].toIntOrNull() ?: return@runCatching null
+        val k = match.groupValues[4].split('|')
+        var result = p
+        for (i in (c - 1) downTo 0) {
+            if (i < k.size && k[i].isNotEmpty()) {
+                result = result.replace(Regex("\\b${Regex.escape(i.toString(a))}\\b"), k[i])
+            }
+        }
+        result
+    }.getOrNull()
+
+    private fun String.findPassMd5(): String? {
         for (pattern in PASS_MD5_PATTERNS) {
-            pattern.find(scriptContent)?.let { match ->
+            pattern.find(this)?.let { match ->
                 return match.groupValues[1].removePrefix("/")
             }
         }
         return null
     }
+
+    private fun String.containsDoodStream(): Boolean =
+        contains("playmogo") || contains("dood")
 
     private suspend fun extractPendekMyId(
         url: String,
@@ -331,6 +398,17 @@ class KimcilOnlyProvider : MainAPI() {
             Regex("""/pass_md5/([a-zA-Z0-9\-]+/[a-zA-Z0-9]+)"""),
             Regex("""pass_md5['"]\s*:\s*['"]([^'"]+)['"]"""),
             Regex("""['"](/pass_md5/[^'"]+)['"]"""),
+        )
+        private val PACKER_REGEX = Regex(
+            """eval\(function\(p,a,c,k,e,d\)\{[^}]*\}\('(.+?)',(\d+),(\d+),'([^']*?)'\.split\('\|'\)""",
+            RegexOption.DOT_MATCHES_ALL
+        )
+        private val CDN_DOMAINS = listOf(
+            "iihbzqjhkqull.tnmr.org",
+            "DrMtUew6NHFm.tnmr.org",
+            "hw6ugf3856NN.tnmr.org",
+            "hw.jmnl.xyz",
+            "hw.cdnst1.xyz"
         )
         private val IFRAME_ATTRIBUTES = listOf("src", "data-lazy-src", "data-src")
         private const val ALPHANUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
